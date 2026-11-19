@@ -134,6 +134,23 @@ pub fn sample_book() -> TestBook {
     }
 }
 
+/// A small EPUB whose navigation document has no entries.
+pub fn sample_book_without_toc() -> TestBook {
+    let book = sample_book();
+    write(
+        &book.path,
+        "OEBPS/nav.xhtml",
+        r#"<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Contents</title></head>
+  <body>
+    <nav epub:type="toc"><ol/></nav>
+  </body>
+</html>"#,
+    );
+    book
+}
+
 fn write(root: &Path, relative: &str, content: &str) {
     write_bytes(root, relative, content.as_bytes());
 }

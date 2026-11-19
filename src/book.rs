@@ -22,6 +22,17 @@ pub struct Chapter {
     pub plain: Vec<String>,
 }
 
+/// One entry in the EPUB table of contents.
+#[derive(Debug, Clone)]
+pub struct TocEntry {
+    /// Display label.
+    pub title: String,
+    /// Chapter the entry points at.
+    pub chapter: usize,
+    /// Nesting depth, starting at zero.
+    pub depth: usize,
+}
+
 /// An opened EPUB.
 pub struct Book {
     epub: Epub,
@@ -29,6 +40,7 @@ pub struct Book {
     pub title: String,
     pub author: Option<String>,
     pub chapters: Vec<Chapter>,
+    pub toc: Vec<TocEntry>,
     image_hrefs: HashMap<String, String>,
 }
 
@@ -57,12 +69,18 @@ impl Book {
             .map(|entry| entry.value().trim().to_string())
             .filter(|value| !value.is_empty());
 
+        let mut raw_toc = Vec::new();
+        if let Some(root) = epub.toc().contents() {
+            collect_toc(&root, &mut raw_toc);
+        }
         let mut toc_anchors: HashMap<String, Vec<TocAnchor>> = HashMap::new();
-        for root in epub.toc().iter() {
-            collect_toc_anchors(&root, &mut toc_anchors);
-            for entry in root.flatten() {
-                collect_toc_anchors(&entry, &mut toc_anchors);
-            }
+        for entry in &raw_toc {
+            toc_anchors.entry(entry.path.clone()).or_default().push(
+                TocAnchor {
+                    fragment: entry.fragment.clone(),
+                    label: entry.label.clone(),
+                },
+            );
         }
 
         let mut image_hrefs = HashMap::new();
@@ -72,6 +90,9 @@ impl Book {
         }
 
         let mut chapters = Vec::new();
+        let mut anchor_map: HashMap<(String, Option<String>), usize> =
+            HashMap::new();
+        let mut document_first: HashMap<String, usize> = HashMap::new();
         let mut reader = epub.reader();
         loop {
             let content = match reader.read_next() {
@@ -106,6 +127,14 @@ impl Book {
                         format!("Chapter {}", chapters.len() + 1)
                     });
 
+                let chapter_index = chapters.len();
+                if let Some(anchor) = &section.anchor {
+                    anchor_map
+                        .entry((key.clone(), Some(anchor.clone())))
+                        .or_insert(chapter_index);
+                }
+                document_first.entry(key.clone()).or_insert(chapter_index);
+
                 let plain =
                     section.blocks.iter().map(Block::plain_text).collect();
                 chapters.push(Chapter {
@@ -126,12 +155,38 @@ impl Book {
             });
         }
 
+        let mut toc = Vec::new();
+        for entry in &raw_toc {
+            if entry.label.is_empty() {
+                continue;
+            }
+            let chapter = anchor_map
+                .get(&(entry.path.clone(), entry.fragment.clone()))
+                .or_else(|| document_first.get(&entry.path))
+                .copied();
+            let Some(chapter) = chapter else {
+                continue;
+            };
+            if toc
+                .last()
+                .is_some_and(|last: &TocEntry| last.chapter == chapter)
+            {
+                continue;
+            }
+            toc.push(TocEntry {
+                title: collapse_spaces(&entry.label),
+                chapter,
+                depth: entry.depth,
+            });
+        }
+
         Ok(Self {
             epub,
             path,
             title: collapse_spaces(&title),
             author,
             chapters,
+            toc,
             image_hrefs,
         })
     }
@@ -197,9 +252,18 @@ struct TocAnchor {
     label: String,
 }
 
+struct RawTocEntry {
+    path: String,
+    fragment: Option<String>,
+    label: String,
+    depth: usize,
+}
+
 struct Section {
     title: Option<String>,
     blocks: Vec<Block>,
+    /// Anchor at which the section starts, when a TOC anchor starts it.
+    anchor: Option<String>,
 }
 
 /// Split one XHTML document into sections.
@@ -223,16 +287,20 @@ fn split_sections(
             };
             if let Some(index) = index {
                 if index < blocks.len() && !entry.label.is_empty() {
-                    cuts.push((index, entry.label.clone()));
+                    cuts.push((
+                        index,
+                        entry.label.clone(),
+                        entry.fragment.clone(),
+                    ));
                 }
             }
         }
     }
-    cuts.sort_by_key(|(index, _)| *index);
-    cuts.dedup_by_key(|(index, _)| *index);
+    cuts.sort_by_key(|(index, _, _)| *index);
+    cuts.dedup_by_key(|(index, _, _)| *index);
 
     let use_cuts =
-        cuts.len() > 1 || cuts.first().is_some_and(|(index, _)| *index > 0);
+        cuts.len() > 1 || cuts.first().is_some_and(|(index, _, _)| *index > 0);
     if !use_cuts {
         let mut sections = heading_sections(blocks);
         if sections.len() == 1 && sections[0].title.is_none() {
@@ -243,15 +311,15 @@ fn split_sections(
         return sections;
     }
 
-    if cuts.first().is_none_or(|(index, _)| *index > 0) {
-        cuts.insert(0, (0, String::new()));
+    if cuts.first().is_none_or(|(index, _, _)| *index > 0) {
+        cuts.insert(0, (0, String::new(), None));
     }
 
     let mut sections = Vec::new();
-    for (number, (start, label)) in cuts.iter().enumerate() {
+    for (number, (start, label, anchor)) in cuts.iter().enumerate() {
         let end = cuts
             .get(number + 1)
-            .map(|(index, _)| *index)
+            .map(|(index, _, _)| *index)
             .unwrap_or(blocks.len());
         if start >= &end {
             continue;
@@ -259,6 +327,7 @@ fn split_sections(
         sections.push(Section {
             title: (!label.is_empty()).then(|| label.clone()),
             blocks: blocks[*start..end].to_vec(),
+            anchor: anchor.clone(),
         });
     }
     sections
@@ -282,6 +351,7 @@ fn heading_sections(blocks: Vec<Block>) -> Vec<Section> {
             sections.push(Section {
                 title: title.take(),
                 blocks: std::mem::take(&mut current),
+                anchor: None,
             });
             has_text = false;
         }
@@ -301,37 +371,40 @@ fn heading_sections(blocks: Vec<Block>) -> Vec<Section> {
         sections.push(Section {
             title,
             blocks: current,
+            anchor: None,
         });
     }
     sections
 }
 
-fn collect_toc_anchors(
+fn collect_toc(
     entry: &rbook::epub::toc::EpubTocEntry<'_>,
-    anchors: &mut HashMap<String, Vec<TocAnchor>>,
+    out: &mut Vec<RawTocEntry>,
 ) {
-    let Some(href) = entry.href() else {
-        return;
-    };
-    let raw = href.as_ref();
-    let (path, fragment) = match raw.split_once('#') {
-        Some((path, fragment)) => (
-            path,
-            Some(
-                percent_decode_str(fragment)
-                    .decode_utf8_lossy()
-                    .into_owned(),
+    if let Some(href) = entry.href() {
+        let raw = href.as_ref();
+        let (path, fragment) = match raw.split_once('#') {
+            Some((path, fragment)) => (
+                path,
+                Some(
+                    percent_decode_str(fragment)
+                        .decode_utf8_lossy()
+                        .into_owned(),
+                ),
             ),
-        ),
-        None => (raw, None),
-    };
-    let path = path.split('?').next().unwrap_or(path);
-    let key = normalize_path(path);
-    let label = entry.label().trim().to_string();
-    anchors
-        .entry(key)
-        .or_default()
-        .push(TocAnchor { fragment, label });
+            None => (raw, None),
+        };
+        let path = path.split('?').next().unwrap_or(path);
+        out.push(RawTocEntry {
+            path: normalize_path(path),
+            fragment,
+            label: entry.label().trim().to_string(),
+            depth: entry.depth(),
+        });
+    }
+    for child in entry.iter() {
+        collect_toc(&child, out);
+    }
 }
 
 /// Normalize a manifest href to a lookup key: decoded, without a fragment or
@@ -380,6 +453,21 @@ mod tests {
             .plain
             .iter()
             .any(|text| text.contains("theta")));
+
+        assert_eq!(book.toc.len(), 3);
+        assert_eq!(book.toc[0].title, "First Chapter");
+        assert_eq!(book.toc[1].title, "Part Two");
+        assert_eq!(book.toc[1].chapter, 1);
+        assert_eq!(book.toc[2].title, "Second Chapter");
+        assert_eq!(book.toc[2].chapter, 2);
+    }
+
+    #[test]
+    fn empty_toc_yields_no_entries() {
+        let fixture = crate::testutil::sample_book_without_toc();
+        let book = Book::open(&fixture.path).unwrap();
+        assert!(book.toc.is_empty());
+        assert_eq!(book.chapters.len(), 3);
     }
 
     #[test]

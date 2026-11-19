@@ -336,7 +336,13 @@ impl App {
                 );
             }
             KeyCode::Char('t') => {
-                self.toc_selected = self.chapter;
+                self.toc_selected = self
+                    .book
+                    .toc
+                    .iter()
+                    .rposition(|entry| entry.chapter <= self.chapter)
+                    .unwrap_or(0);
+                self.toc_offset = 0;
                 self.mode = Mode::Toc;
             }
             KeyCode::Char('%') => {
@@ -449,7 +455,6 @@ impl App {
         }
 
         self.chapter = chapter;
-        self.toc_selected = chapter;
         self.scroll = 0;
         self.rebuild_view();
         let max = self.max_scroll();
@@ -480,7 +485,7 @@ impl App {
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
-        let last = self.book.chapters.len().saturating_sub(1);
+        let last = self.book.toc.len().saturating_sub(1);
         match key.code {
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => {
                 self.mode = Mode::Normal
@@ -500,9 +505,11 @@ impl App {
                 self.toc_selected = self.toc_selected.saturating_sub(10);
             }
             KeyCode::Enter => {
-                let selected = self.toc_selected;
-                self.mode = Mode::Normal;
-                self.open_chapter(selected);
+                if let Some(entry) = self.book.toc.get(self.toc_selected) {
+                    let chapter = entry.chapter;
+                    self.mode = Mode::Normal;
+                    self.open_chapter(chapter);
+                }
             }
             _ => {}
         }
@@ -515,7 +522,6 @@ impl App {
         }
         self.chapter = index;
         self.scroll = 0;
-        self.toc_selected = index;
         self.rebuild_view();
         let _ = self.save_position();
     }
@@ -1031,9 +1037,9 @@ impl App {
             return;
         }
         let width = 72.min(area.width.saturating_sub(4)).max(20);
-        let height = (self.book.chapters.len() as u16 + 2)
-            .min(area.height.saturating_sub(2))
-            .max(4);
+        let count = self.book.toc.len();
+        let height =
+            (count as u16 + 2).min(area.height.saturating_sub(2)).max(5);
         let rect = centered(area, width, height);
         frame.render_widget(Clear, rect);
 
@@ -1044,6 +1050,21 @@ impl App {
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
 
+        if count == 0 {
+            let lines = vec![
+                Line::styled(
+                    " No table of contents in this book.",
+                    self.palette.muted(),
+                ),
+                Line::styled(
+                    " Use h/l, %, or / to move.",
+                    self.palette.muted(),
+                ),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+
         let visible = usize::from(inner.height);
         if self.toc_selected < self.toc_offset {
             self.toc_offset = self.toc_selected;
@@ -1053,9 +1074,9 @@ impl App {
         }
 
         let mut lines = Vec::new();
-        for (index, chapter) in self
+        for (index, entry) in self
             .book
-            .chapters
+            .toc
             .iter()
             .enumerate()
             .skip(self.toc_offset)
@@ -1066,13 +1087,14 @@ impl App {
             } else {
                 self.palette.base()
             };
-            let marker = if index == self.chapter {
+            let marker = if entry.chapter == self.chapter {
                 "\u{25b8}"
             } else {
                 " "
             };
+            let indent = "  ".repeat(entry.depth.min(4));
             lines.push(Line::from(vec![Span::styled(
-                format!("{marker} {:>3}  {}", index + 1, chapter.title),
+                format!("{marker} {indent}{}", entry.title),
                 style,
             )]));
         }
@@ -1486,9 +1508,23 @@ mod tests {
 
         press(&mut app, KeyCode::Char('t'));
         assert_eq!(app.mode(), Mode::Toc);
+        let text = screen(&mut app);
+        assert!(text.contains("First Chapter"));
+        assert!(text.contains("Part Two"));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.chapter(), 1);
+    }
+
+    #[test]
+    fn shows_message_when_toc_is_empty() {
+        let fixture = crate::testutil::sample_book_without_toc();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.mode(), Mode::Toc);
+        assert!(screen(&mut app).contains("No table of contents"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
     }
 }
