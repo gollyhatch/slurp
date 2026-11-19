@@ -257,6 +257,7 @@ impl App {
         } else {
             0.0
         };
+        let book_progress = self.book_fraction();
         self.state.set(BookPosition {
             path: self.book_key.clone(),
             title: self.book.title.clone(),
@@ -264,8 +265,26 @@ impl App {
             progress,
             updated: state::now(),
             bookmarks: self.bookmarks.clone(),
+            chapters: self.book.chapters.len(),
+            book_progress,
         });
         self.state.save(&self.state_path)
+    }
+
+    /// Reading progress in the whole book, from 0 to 1.
+    fn book_fraction(&self) -> f32 {
+        if self.total_chars == 0 || self.book.chapters.is_empty() {
+            return 0.0;
+        }
+        let before: usize = self.chapter_chars.iter().take(self.chapter).sum();
+        let chars = self.chapter_chars.get(self.chapter).copied().unwrap_or(0);
+        let local = if self.view.total_rows > 0 {
+            (self.scroll as f32 / self.view.total_rows as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        ((before as f32 + local * chars as f32) / self.total_chars as f32)
+            .clamp(0.0, 1.0)
     }
 
     /// Handle one key press. Returns `true` when the reader must exit.
@@ -2853,6 +2872,28 @@ mod tests {
         }
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn saves_whole_book_progress() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, state_path, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('%'));
+        type_text(&mut app, "50");
+        press(&mut app, KeyCode::Enter);
+        app.save_position().unwrap();
+
+        let store = Store::load(&state_path);
+        let position = store.get(&app.book_key).expect("position is saved");
+        assert_eq!(position.chapters, app.book.chapters.len());
+        assert!(
+            (position.book_progress - 0.5).abs() < 0.05,
+            "book progress was {}",
+            position.book_progress
+        );
+        let percent = (position.book_progress * 100.0).round() as i32;
+        assert!((percent - i32::from(app.book_percent())).abs() <= 1);
     }
 
     #[test]

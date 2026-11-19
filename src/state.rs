@@ -27,6 +27,12 @@ pub struct BookPosition {
     /// Named bookmarks inside the book.
     #[serde(default)]
     pub bookmarks: Vec<Bookmark>,
+    /// Number of chapters when the position was saved.
+    #[serde(default)]
+    pub chapters: usize,
+    /// Reading progress in the whole book, from 0 to 1.
+    #[serde(default)]
+    pub book_progress: f32,
 }
 
 /// A named position inside a book.
@@ -140,6 +146,8 @@ mod tests {
             chapter: 3,
             progress: 0.5,
             updated: 1,
+            chapters: 9,
+            book_progress: 0.25,
             ..Default::default()
         });
         store.save(&path).unwrap();
@@ -149,6 +157,8 @@ mod tests {
         assert_eq!(position.chapter, 3);
         assert!((position.progress - 0.5).abs() < f32::EPSILON);
         assert_eq!(position.title, "A");
+        assert_eq!(position.chapters, 9);
+        assert!((position.book_progress - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

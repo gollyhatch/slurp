@@ -159,7 +159,12 @@ impl Library {
             book.title.clone()
         };
         let percent = (book.progress * 100.0).round().clamp(0.0, 100.0);
-        let detail = format!("Chapter {}  {percent}%", book.chapter + 1);
+        let mut detail = format!("Chapter {}  {percent}%", book.chapter + 1);
+        if book.chapters > 0 {
+            let book_percent =
+                (book.book_progress * 100.0).round().clamp(0.0, 100.0);
+            detail.push_str(&format!("  Book {book_percent}%"));
+        }
         let missing = !Path::new(&book.path).exists();
         let mut used = 1 + label.chars().count() + detail.chars().count();
         if missing {
@@ -310,6 +315,32 @@ mod tests {
         let label = buffer[(2, 1)].clone();
         assert_eq!(label.bg, palette.selection);
         assert_eq!(label.fg, palette.accent);
+    }
+
+    #[test]
+    fn shows_total_book_progress() {
+        let mut store = Store::default();
+        let mut book = position("/tmp", "Half", 5);
+        book.chapter = 1;
+        book.progress = 0.5;
+        book.chapters = 4;
+        book.book_progress = 0.375;
+        store.books.push(book);
+        let mut library = Library::new(store, palette());
+
+        let text = screen(&mut library);
+        assert!(text.contains("Chapter 2  50%  Book 38%"), "row was {text}");
+    }
+
+    #[test]
+    fn hides_book_progress_for_old_entries() {
+        let mut store = Store::default();
+        store.books.push(position("/tmp", "Old", 1));
+        let mut library = Library::new(store, palette());
+
+        let text = screen(&mut library);
+        assert!(text.contains("Chapter 2  50%"));
+        assert!(!text.contains("Book "));
     }
 
     #[test]
