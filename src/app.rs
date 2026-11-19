@@ -72,6 +72,8 @@ pub struct App {
     search_before: Option<Search>,
     toc_selected: usize,
     toc_offset: usize,
+    toc_matches: Vec<usize>,
+    toc_filter: String,
     theme_matches: Vec<usize>,
     theme_filter: String,
     theme_selected: usize,
@@ -141,8 +143,10 @@ impl App {
             input: String::new(),
             search: None,
             search_before: None,
-            toc_selected: chapter,
+            toc_selected: 0,
             toc_offset: 0,
+            toc_matches: Vec::new(),
+            toc_filter: String::new(),
             theme_matches: Vec::new(),
             theme_filter: String::new(),
             theme_selected: 0,
@@ -336,12 +340,15 @@ impl App {
                 );
             }
             KeyCode::Char('t') => {
+                self.toc_filter.clear();
+                self.toc_matches = (0..self.book.toc.len()).collect();
                 self.toc_selected = self
                     .book
                     .toc
                     .iter()
                     .rposition(|entry| entry.chapter <= self.chapter)
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .min(self.toc_matches.len().saturating_sub(1));
                 self.toc_offset = 0;
                 self.mode = Mode::Toc;
             }
@@ -485,19 +492,17 @@ impl App {
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
-        let last = self.book.toc.len().saturating_sub(1);
+        let last = self.toc_matches.len().saturating_sub(1);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => {
-                self.mode = Mode::Normal
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Down => {
                 self.toc_selected = (self.toc_selected + 1).min(last);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.toc_selected = self.toc_selected.saturating_sub(1);
             }
-            KeyCode::Char('g') | KeyCode::Home => self.toc_selected = 0,
-            KeyCode::Char('G') | KeyCode::End => self.toc_selected = last,
+            KeyCode::Home => self.toc_selected = 0,
+            KeyCode::End => self.toc_selected = last,
             KeyCode::PageDown => {
                 self.toc_selected = (self.toc_selected + 10).min(last);
             }
@@ -505,14 +510,43 @@ impl App {
                 self.toc_selected = self.toc_selected.saturating_sub(10);
             }
             KeyCode::Enter => {
-                if let Some(entry) = self.book.toc.get(self.toc_selected) {
-                    let chapter = entry.chapter;
-                    self.mode = Mode::Normal;
-                    self.open_chapter(chapter);
+                if let Some(&index) = self.toc_matches.get(self.toc_selected) {
+                    if let Some(entry) = self.book.toc.get(index) {
+                        let chapter = entry.chapter;
+                        self.mode = Mode::Normal;
+                        self.open_chapter(chapter);
+                    }
                 }
+            }
+            KeyCode::Backspace => {
+                self.toc_filter.pop();
+                self.refresh_toc_matches();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.toc_filter.push(ch);
+                self.refresh_toc_matches();
             }
             _ => {}
         }
+    }
+
+    fn refresh_toc_matches(&mut self) {
+        let needle = self.toc_filter.to_lowercase();
+        self.toc_matches = self
+            .book
+            .toc
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                needle.is_empty()
+                    || entry.title.to_lowercase().contains(&needle)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.toc_selected = 0;
     }
 
     fn open_chapter(&mut self, index: usize) {
@@ -1037,20 +1071,17 @@ impl App {
             return;
         }
         let width = 72.min(area.width.saturating_sub(4)).max(20);
-        let count = self.book.toc.len();
-        let height =
-            (count as u16 + 2).min(area.height.saturating_sub(2)).max(5);
-        let rect = centered(area, width, height);
-        frame.render_widget(Clear, rect);
-
-        let block = Block::bordered()
-            .title(" Contents ")
-            .border_style(self.palette.border_style())
-            .style(self.palette.base());
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-
-        if count == 0 {
+        let total = self.book.toc.len();
+        if total == 0 {
+            let height = 5;
+            let rect = centered(area, width, height);
+            frame.render_widget(Clear, rect);
+            let block = Block::bordered()
+                .title(" Contents ")
+                .border_style(self.palette.border_style())
+                .style(self.palette.base());
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
             let lines = vec![
                 Line::styled(
                     " No table of contents in this book.",
@@ -1065,40 +1096,91 @@ impl App {
             return;
         }
 
-        let visible = usize::from(inner.height);
+        let max_list = usize::from(area.height.saturating_sub(6).max(1));
+        let visible_entries = self.toc_matches.len().min(max_list);
+        let height = (visible_entries as u16 + 4)
+            .min(area.height.saturating_sub(2))
+            .max(6);
+        let rect = centered(area, width, height);
+        frame.render_widget(Clear, rect);
+
+        let block = Block::bordered()
+            .title(" Contents ")
+            .border_style(self.palette.border_style())
+            .style(self.palette.base());
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+
+        let [search_area, list_area, hint_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+
+        let label = "filter: ";
+        let mut search = String::from(label);
+        search.push_str(&self.toc_filter);
+        frame.render_widget(
+            Paragraph::new(Line::styled(search, self.palette.muted())),
+            search_area,
+        );
+        let cursor_x = search_area
+            .x
+            .saturating_add(layout::display_width(label) as u16)
+            .saturating_add(layout::display_width(&self.toc_filter) as u16);
+        if cursor_x < search_area.right() {
+            frame.set_cursor_position(Position::new(cursor_x, search_area.y));
+        }
+
+        let rows = usize::from(list_area.height);
         if self.toc_selected < self.toc_offset {
             self.toc_offset = self.toc_selected;
-        } else if visible > 0 && self.toc_selected >= self.toc_offset + visible
-        {
-            self.toc_offset = self.toc_selected + 1 - visible;
+        } else if rows > 0 && self.toc_selected >= self.toc_offset + rows {
+            self.toc_offset = self.toc_selected + 1 - rows;
         }
 
         let mut lines = Vec::new();
-        for (index, entry) in self
-            .book
-            .toc
-            .iter()
-            .enumerate()
-            .skip(self.toc_offset)
-            .take(visible)
-        {
-            let style = if index == self.toc_selected {
-                self.palette.selected()
-            } else {
-                self.palette.base()
-            };
-            let marker = if entry.chapter == self.chapter {
-                "\u{25b8}"
-            } else {
-                " "
-            };
-            let indent = "  ".repeat(entry.depth.min(4));
-            lines.push(Line::from(vec![Span::styled(
-                format!("{marker} {indent}{}", entry.title),
-                style,
-            )]));
+        if self.toc_matches.is_empty() {
+            lines.push(Line::styled(
+                " no matching entries",
+                self.palette.muted(),
+            ));
+        } else {
+            for (index, entry_index) in self
+                .toc_matches
+                .iter()
+                .enumerate()
+                .skip(self.toc_offset)
+                .take(rows)
+            {
+                let entry = &self.book.toc[*entry_index];
+                let style = if index == self.toc_selected {
+                    self.palette.selected()
+                } else {
+                    self.palette.base()
+                };
+                let marker = if entry.chapter == self.chapter {
+                    "\u{25b8}"
+                } else {
+                    " "
+                };
+                let indent = "  ".repeat(entry.depth.min(4));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("{marker} {indent}{}", entry.title),
+                    style,
+                )]));
+            }
         }
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines), list_area);
+
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " enter open   esc close   up/down select ",
+                self.palette.muted(),
+            )),
+            hint_area,
+        );
     }
 
     fn draw_theme_selector(&mut self, frame: &mut Frame, area: Rect) {
@@ -1198,7 +1280,7 @@ impl App {
             " b            page up",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
-            " t            table of contents",
+            " t            contents (type to filter)",
             " %            jump to a percentage",
             " /            full-text search",
             " n / N        next / previous match",
@@ -1511,10 +1593,30 @@ mod tests {
         let text = screen(&mut app);
         assert!(text.contains("First Chapter"));
         assert!(text.contains("Part Two"));
-        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.chapter(), 1);
+    }
+
+    #[test]
+    fn toc_can_be_filtered() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('t'));
+        type_text(&mut app, "part");
+
+        let text = screen(&mut app);
+        assert!(text.contains("filter: part"));
+        assert!(text.contains("Part Two"));
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.chapter(), 1);
+
+        press(&mut app, KeyCode::Char('t'));
+        type_text(&mut app, "zzz");
+        assert!(screen(&mut app).contains("no matching entries"));
+        press(&mut app, KeyCode::Esc);
     }
 
     #[test]
