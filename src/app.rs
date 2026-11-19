@@ -2081,7 +2081,8 @@ impl App {
             return;
         }
         let width = 60.min(area.width.saturating_sub(4)).max(24);
-        let height = 8.min(area.height.saturating_sub(2)).max(6);
+        // Seven lines plus the two border rows.
+        let height = 9.min(area.height.saturating_sub(2)).max(6);
         let rect = centered(area, width, height);
         frame.render_widget(Clear, rect);
 
@@ -2717,6 +2718,7 @@ mod tests {
         assert!(text.contains("Time left"));
         assert!(text.contains("Words left"));
         assert!(text.contains("Reading stats"));
+        assert!(text.contains("esc close"));
 
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode(), Mode::Normal);

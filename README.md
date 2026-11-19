@@ -7,6 +7,34 @@ jumps, inline images, and per-book reading positions.
 slurp book.epub
 ```
 
+## Screenshots
+
+All screenshots use the built-in `ayu-dark` theme.
+
+![Reading view](screenshots/reader.png)
+
+*Reading view: reflowed text, emphasis, quotes, and the status line.*
+
+![Contents popup](screenshots/contents.png)
+
+*Contents popup with fuzzy filtering.*
+
+![Search](screenshots/search.png)
+
+*Full-text search with highlighted matches and a match counter.*
+
+![Bookmarks](screenshots/bookmarks.png)
+
+*Named bookmarks with chapter and chapter progress.*
+
+![Reading stats](screenshots/stats.png)
+
+*Reading time and words left for the chapter and the book.*
+
+![Recent books](screenshots/library.png)
+
+*Recent books with chapter and whole-book progress.*
+
 ## Features
 
 - Reflows EPUB text to any terminal width. Set a maximum text width in the
@@ -14,6 +42,10 @@ slurp book.epub
 - Vim-like scrolling and chapter navigation. Chapters follow the EPUB
   table of contents, including several chapters inside one file.
 - Full-text search across all chapters with `/`, and match highlighting.
+- Follow internal links and footnotes with `Tab`, `Enter`, and `Ctrl+O` to go
+  back.
+- Named bookmarks per book with `m` and `'`, including a jump back to the
+  saved place.
 - Jump anywhere in the book with `%` and a percentage.
 - Auto-scroll at a configurable speed in words per minute. It stops at
   popups and moves to the next chapter when the screen ends.
@@ -24,10 +56,17 @@ slurp book.epub
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
 - Remembers the chapter and scroll position for each book and returns to the
   same place on the next start.
+- Shows the time left for the chapter and the book, in the status line and in
+  a popup on `s`.
+- Runs without a book and opens a recent-books list with chapter and
+  whole-book progress.
+- Saves theme, width, and mode changes back to the config file with `S`,
+  keeping comments and unrelated keys.
 - Uses the 39 built-in [opaline](https://crates.io/crates/opaline) themes.
   Press `Ctrl+T` to search the themes and preview them live.
   Every color role can be overridden in the config file.
 - Images can be turned off from the config file or with `i`.
+- The mouse wheel scrolls, and a click opens an entry in a popup.
 
 ## Build
 
@@ -50,8 +89,14 @@ The binary is `target/release/slurp`.
 | `t` | Fuzzy-searchable table of contents from the EPUB |
 | `%` | Jump to a percentage of the book |
 | `/` | Search all chapters |
-| `Enter` | Run the search, apply the percentage, or open the selected chapter |
+| `Enter` | Run the search, apply the percentage, follow the selected link, or open the selected chapter |
+| `Tab` | Select the next link in the chapter |
+| `Ctrl+O` | Go back after following a link |
 | `n` / `N` | Next or previous match |
+| `m` | Add a named bookmark |
+| `'` | Open the bookmark list (`Enter` jumps, `x` deletes) |
+| `s` | Reading stats for the chapter and the book |
+| `S` | Save the changed settings to the config file |
 | `i` | Toggle images |
 | `a` | Toggle auto-scroll |
 | `c` | Toggle continuous mode |
@@ -60,6 +105,7 @@ The binary is `target/release/slurp`.
 | `+` / `-` | Wider or narrower text column |
 | `?` | Show the key help |
 | `Esc` | Cancel a prompt, close a popup, or clear the search |
+| Mouse wheel, click | Scroll the page, and activate entries in popups |
 | `q`, `Ctrl-C` | Save the position and quit |
 
 ## Configuration
@@ -88,6 +134,9 @@ images = true
 
 # Auto-scroll speed, in words per minute.
 auto_scroll_wpm = 200
+
+# Reading speed, in words per minute, used for the time estimate.
+reading_wpm = 250
 
 # Scroll through all chapters as one stream.
 continuous = false
@@ -143,7 +192,9 @@ when you quit, and when the program exits.
 ## Command line
 
 ```
-slurp [OPTIONS] <BOOK.epub>
+slurp [OPTIONS] [BOOK.epub]
+
+Without a book, slurp opens the recent-books list.
 
   -c, --config <FILE>   Use a specific config file
       --state <FILE>    Use a specific reading position file
