@@ -9,7 +9,8 @@ use anyhow::Result;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
 use ratatui::style::Style;
@@ -40,6 +41,7 @@ pub enum Mode {
     Theme,
     Bookmarks,
     BookmarkLabel,
+    Stats,
 }
 
 /// One search result.
@@ -86,10 +88,12 @@ pub struct App {
     toc_offset: usize,
     toc_matches: Vec<usize>,
     toc_filter: String,
+    toc_list_area: Option<Rect>,
     theme_matches: Vec<usize>,
     theme_filter: String,
     theme_selected: usize,
     theme_offset: usize,
+    theme_list_area: Option<Rect>,
     theme_before: Option<(String, Palette)>,
     images: bool,
     message: Option<String>,
@@ -188,10 +192,12 @@ impl App {
             toc_offset: 0,
             toc_matches: Vec::new(),
             toc_filter: String::new(),
+            toc_list_area: None,
             theme_matches: Vec::new(),
             theme_filter: String::new(),
             theme_selected: 0,
             theme_offset: 0,
+            theme_list_area: None,
             theme_before: None,
             message: None,
             quit: false,
@@ -293,6 +299,14 @@ impl App {
             Mode::Theme => self.key_theme(key),
             Mode::Bookmarks => self.key_bookmarks(key),
             Mode::BookmarkLabel => self.key_bookmark_label(key),
+            Mode::Stats => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s')
+                ) {
+                    self.mode = Mode::Normal;
+                }
+            }
             Mode::Help => {
                 if matches!(
                     key.code,
@@ -306,6 +320,73 @@ impl App {
             }
         }
         Ok(self.quit)
+    }
+
+    /// Handle one mouse event. A single left click activates a popup entry.
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        match event.kind {
+            MouseEventKind::ScrollUp => match self.mode {
+                Mode::Normal => self.scroll_by(-3),
+                Mode::Toc => {
+                    self.toc_selected = self.toc_selected.saturating_sub(1)
+                }
+                Mode::Theme => self.select_theme(-1),
+                Mode::Bookmarks => {
+                    self.bookmark_selected =
+                        self.bookmark_selected.saturating_sub(1)
+                }
+                _ => {}
+            },
+            MouseEventKind::ScrollDown => match self.mode {
+                Mode::Normal => self.scroll_by(3),
+                Mode::Toc => {
+                    self.toc_selected = (self.toc_selected + 1)
+                        .min(self.toc_matches.len().saturating_sub(1))
+                }
+                Mode::Theme => self.select_theme(1),
+                Mode::Bookmarks if !self.bookmarks.is_empty() => {
+                    self.bookmark_selected = (self.bookmark_selected + 1)
+                        .min(self.bookmarks.len() - 1);
+                }
+                _ => {}
+            },
+            MouseEventKind::Down(MouseButton::Left) => {
+                let position = Position::new(event.column, event.row);
+                match self.mode {
+                    Mode::Toc => {
+                        let Some(area) = self.toc_list_area else {
+                            return;
+                        };
+                        if !area.contains(position) {
+                            return;
+                        }
+                        let index =
+                            self.toc_offset + usize::from(event.row - area.y);
+                        if index < self.toc_matches.len() {
+                            self.toc_selected = index;
+                            self.activate_toc();
+                        }
+                    }
+                    Mode::Theme => {
+                        let Some(area) = self.theme_list_area else {
+                            return;
+                        };
+                        if !area.contains(position) {
+                            return;
+                        }
+                        let index = self.theme_offset
+                            + usize::from(event.row - area.y);
+                        if index < self.theme_matches.len() {
+                            self.theme_selected = index;
+                            self.preview_theme();
+                            self.apply_theme();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Draw the reader.
@@ -338,6 +419,7 @@ impl App {
             Mode::Help => self.draw_help(frame, area),
             Mode::Theme => self.draw_theme_selector(frame, area),
             Mode::Bookmarks => self.draw_bookmarks(frame, area),
+            Mode::Stats => self.draw_stats(frame, area),
             _ => {}
         }
 
@@ -435,6 +517,7 @@ impl App {
                 self.bookmark_offset = 0;
                 self.mode = Mode::Bookmarks;
             }
+            KeyCode::Char('s') => self.mode = Mode::Stats,
             KeyCode::Char('%') => {
                 self.input.clear();
                 self.mode = Mode::Percent;
@@ -685,15 +768,7 @@ impl App {
             KeyCode::PageUp => {
                 self.toc_selected = self.toc_selected.saturating_sub(10);
             }
-            KeyCode::Enter => {
-                if let Some(&index) = self.toc_matches.get(self.toc_selected) {
-                    if let Some(entry) = self.book.toc.get(index) {
-                        let chapter = entry.chapter;
-                        self.mode = Mode::Normal;
-                        self.open_chapter(chapter);
-                    }
-                }
-            }
+            KeyCode::Enter => self.activate_toc(),
             KeyCode::Backspace => {
                 self.toc_filter.pop();
                 self.refresh_toc_matches();
@@ -706,6 +781,17 @@ impl App {
                 self.refresh_toc_matches();
             }
             _ => {}
+        }
+    }
+
+    /// Open the selected table of contents entry.
+    fn activate_toc(&mut self) {
+        if let Some(&index) = self.toc_matches.get(self.toc_selected) {
+            if let Some(entry) = self.book.toc.get(index) {
+                let chapter = entry.chapter;
+                self.mode = Mode::Normal;
+                self.open_chapter(chapter);
+            }
         }
     }
 
@@ -1148,16 +1234,7 @@ impl App {
                 self.restore_theme();
                 self.mode = Mode::Normal;
             }
-            KeyCode::Enter => {
-                self.theme_before = None;
-                self.mode = Mode::Normal;
-                let name = theme::builtin_names()
-                    .iter()
-                    .find(|(id, _)| *id == self.config.theme)
-                    .map(|(_, name)| *name)
-                    .unwrap_or(self.config.theme.as_str());
-                self.message = Some(format!("theme: {name}"));
-            }
+            KeyCode::Enter => self.apply_theme(),
             KeyCode::Down => self.select_theme(1),
             KeyCode::Up => self.select_theme(-1),
             KeyCode::PageDown => self.select_theme(10),
@@ -1278,6 +1355,47 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Words left in the current chapter and in the whole book.
+    fn words_left(&self) -> (usize, usize) {
+        let local = if self.view.total_rows > 0 {
+            (self.scroll as f64 / self.view.total_rows as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let chapter_words =
+            self.chapter_words.get(self.chapter).copied().unwrap_or(0) as f64;
+        let chapter_left = (chapter_words * (1.0 - local)).round() as usize;
+        let book_left = chapter_left
+            + self
+                .chapter_words
+                .iter()
+                .skip(self.chapter + 1)
+                .sum::<usize>();
+        (chapter_left, book_left)
+    }
+
+    /// Seconds left in the current chapter and in the whole book.
+    fn reading_seconds(&self) -> (u64, u64) {
+        let (chapter_words, book_words) = self.words_left();
+        let wpm = f64::from(self.config.reading_wpm).max(1.0);
+        (
+            (chapter_words as f64 * 60.0 / wpm).round() as u64,
+            (book_words as f64 * 60.0 / wpm).round() as u64,
+        )
+    }
+
+    /// Keep the previewed theme.
+    fn apply_theme(&mut self) {
+        self.theme_before = None;
+        self.mode = Mode::Normal;
+        let name = theme::builtin_names()
+            .iter()
+            .find(|(id, _)| *id == self.config.theme)
+            .map(|(_, name)| *name)
+            .unwrap_or(self.config.theme.as_str());
+        self.message = Some(format!("theme: {name}"));
     }
 
     fn adjust_width(&mut self, delta: i32) {
@@ -1460,8 +1578,10 @@ impl App {
         } else {
             String::new()
         };
+        let (_, book_seconds) = self.reading_seconds();
         let right = format!(
-            "{auto}{}/{}  {progress}%  ? help ",
+            "{auto}~{}  {}/{}  {progress}%  ? help ",
+            format_duration(book_seconds),
             self.chapter + 1,
             self.book.chapters.len()
         );
@@ -1637,6 +1757,7 @@ impl App {
     }
 
     fn draw_toc(&mut self, frame: &mut Frame, area: Rect) {
+        self.toc_list_area = None;
         if area.width < 12 || area.height < 5 {
             return;
         }
@@ -1743,6 +1864,9 @@ impl App {
             }
         }
         frame.render_widget(Paragraph::new(lines), list_area);
+        if !self.toc_matches.is_empty() {
+            self.toc_list_area = Some(list_area);
+        }
 
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -1754,6 +1878,7 @@ impl App {
     }
 
     fn draw_theme_selector(&mut self, frame: &mut Frame, area: Rect) {
+        self.theme_list_area = None;
         if area.width < 24 || area.height < 6 {
             return;
         }
@@ -1831,6 +1956,9 @@ impl App {
             }
         }
         frame.render_widget(Paragraph::new(lines), list_area);
+        if !self.theme_matches.is_empty() {
+            self.theme_list_area = Some(list_area);
+        }
 
         frame.render_widget(
             Paragraph::new(Line::styled(
@@ -1917,6 +2045,72 @@ impl App {
             )),
             hint_area,
         );
+    }
+
+    fn draw_stats(&self, frame: &mut Frame, area: Rect) {
+        if area.width < 20 || area.height < 6 {
+            return;
+        }
+        let width = 60.min(area.width.saturating_sub(4)).max(24);
+        let height = 8.min(area.height.saturating_sub(2)).max(6);
+        let rect = centered(area, width, height);
+        frame.render_widget(Clear, rect);
+
+        let block = Block::bordered()
+            .title(" Reading stats ")
+            .border_style(self.palette.border_style())
+            .style(self.palette.base());
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+
+        let (chapter_words, book_words) = self.words_left();
+        let (chapter_seconds, book_seconds) = self.reading_seconds();
+        let title = match self.book.author.as_deref() {
+            Some(author) => format!(" {} \u{2014} {author}", self.book.title),
+            None => format!(" {}", self.book.title),
+        };
+        let chapter_title = self
+            .book
+            .chapters
+            .get(self.chapter)
+            .map(|chapter| chapter.title.as_str())
+            .unwrap_or_default();
+
+        let lines = vec![
+            Line::styled(title, self.palette.accent()),
+            Line::styled(
+                format!(
+                    " Chapter {}/{}: {chapter_title}",
+                    self.chapter + 1,
+                    self.book.chapters.len()
+                ),
+                self.palette.base(),
+            ),
+            Line::styled(
+                format!(" Book progress: {}%", self.book_percent()),
+                self.palette.base(),
+            ),
+            Line::styled(
+                format!(
+                    " Words left: {chapter_words} chapter, {book_words} book"
+                ),
+                self.palette.base(),
+            ),
+            Line::styled(
+                format!(
+                    " Time left: {} chapter, {} book",
+                    format_duration(chapter_seconds),
+                    format_duration(book_seconds)
+                ),
+                self.palette.base(),
+            ),
+            Line::styled(
+                format!(" Speed: {} wpm", self.config.reading_wpm),
+                self.palette.muted(),
+            ),
+            Line::styled(" esc close", self.palette.muted()),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
@@ -2011,6 +2205,19 @@ fn bar_line(
         format!("{left}{}{right}", " ".repeat(padding)),
         style,
     )])
+}
+
+/// Format a duration in seconds as a short string.
+fn format_duration(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = (seconds + 30) / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h {}m", minutes / 60, minutes % 60)
+    }
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -2458,6 +2665,124 @@ mod tests {
         assert!(screen(&mut reopened).contains("bookmark deleted"));
         assert!(reopened.bookmarks.is_empty());
         assert!(screen(&mut reopened).contains("no bookmarks"));
+    }
+
+    #[test]
+    fn shows_reading_stats() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        let text = screen(&mut app);
+        assert!(text.contains('~'));
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.mode(), Mode::Stats);
+        let text = screen(&mut app);
+        assert!(text.contains("Time left"));
+        assert!(text.contains("Words left"));
+        assert!(text.contains("Reading stats"));
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn time_left_falls_while_reading() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        let (_, before) = app.reading_seconds();
+        app.scroll_by(10);
+        let (_, after) = app.reading_seconds();
+        assert!(after <= before);
+    }
+
+    #[test]
+    fn formats_durations() {
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(60), "1m");
+        assert_eq!(format_duration(3600), "1h 0m");
+        assert_eq!(format_duration(59), "59s");
+    }
+
+    fn click(app: &mut App, column: u16, row: u16) {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    fn scroll_mouse(app: &mut App, up: bool) {
+        app.handle_mouse(MouseEvent {
+            kind: if up {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::ScrollDown
+            },
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn mouse_opens_a_contents_entry() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('t'));
+        screen(&mut app);
+
+        let area = app.toc_list_area.expect("contents list is drawn");
+        click(&mut app, area.x + 2, area.y + 1);
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.chapter(), 1);
+    }
+
+    #[test]
+    fn mouse_applies_a_theme() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press_ctrl(&mut app, KeyCode::Char('t'));
+        screen(&mut app);
+        let before = app.theme_name().to_string();
+
+        let area = app.theme_list_area.expect("theme list is drawn");
+        click(&mut app, area.x + 2, area.y + 1);
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_ne!(app.theme_name(), before);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_page() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        screen(&mut app);
+
+        scroll_mouse(&mut app, false);
+        let down = app.scroll();
+        assert!(down > 0);
+        scroll_mouse(&mut app, true);
+        assert!(app.scroll() < down);
+    }
+
+    #[test]
+    fn mouse_does_not_open_entries_outside_the_list() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('t'));
+        screen(&mut app);
+
+        click(&mut app, 0, 0);
+
+        assert_eq!(app.mode(), Mode::Toc);
+        assert_eq!(app.chapter(), 0);
     }
 
     #[test]

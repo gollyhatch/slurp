@@ -1,10 +1,14 @@
 //! Command line entry point for slurp.
 
 use std::env;
+use std::io::stdout;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event,
+};
+use ratatui::crossterm::execute;
 use slurp::app::App;
 use slurp::config::Config;
 use slurp::state;
@@ -102,7 +106,10 @@ fn main() -> Result<()> {
     let mut app = App::new(&book_path, config, detect_picker(), state_path)?;
     let mut terminal =
         ratatui::try_init().context("cannot initialize the terminal")?;
+    // Terminals without mouse support keep working with the keyboard.
+    let _ = execute!(stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut app);
+    let _ = execute!(stdout(), DisableMouseCapture);
     let _ = ratatui::try_restore();
     result
 }
@@ -118,6 +125,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
                     }
                 }
                 Event::Resize(_, _) => {}
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
                 _ => {}
             }
         }
