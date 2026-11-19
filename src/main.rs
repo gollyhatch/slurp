@@ -28,7 +28,7 @@ Keys:
   j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
   h/l chapter; t contents;
   % jump to percentage; / search; n/N next/previous match;
-  i toggle images; Ctrl+T theme selector;
+  i toggle images; a auto-scroll; [ / ] speed; Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
 Configuration:
@@ -40,6 +40,7 @@ Configuration:
   paragraph_spacing = 1
   image_max_height = 20
   images = true
+  auto_scroll_wpm = 200
 
   [colors]
   text = \"#cdd6f4\"
@@ -107,15 +108,18 @@ fn main() -> Result<()> {
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|frame| app.draw(frame))?;
-        match event::read()? {
-            Event::Key(key) => {
-                if app.handle_key(key)? {
-                    break;
+        if event::poll(app.poll_timeout())? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if app.handle_key(key)? {
+                        break;
+                    }
                 }
+                Event::Resize(_, _) => {}
+                _ => {}
             }
-            Event::Resize(_, _) => {}
-            _ => {}
         }
+        app.tick();
     }
 
     app.save_position()

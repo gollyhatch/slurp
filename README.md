@@ -15,6 +15,8 @@ slurp book.epub
   table of contents, including several chapters inside one file.
 - Full-text search across all chapters with `/`, and match highlighting.
 - Jump anywhere in the book with `%` and a percentage.
+- Auto-scroll at a configurable speed in words per minute. It stops at
+  popups and moves to the next chapter when the screen ends.
 - The `t` popup uses the EPUB table of contents and can be filtered by
   typing. If the book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
@@ -49,6 +51,8 @@ The binary is `target/release/slurp`.
 | `Enter` | Run the search, apply the percentage, or open the selected chapter |
 | `n` / `N` | Next or previous match |
 | `i` | Toggle images |
+| `a` | Toggle auto-scroll |
+| `[` / `]` | Slower or faster auto-scroll (25 words per minute steps) |
 | `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
 | `?` | Show the key help |
@@ -78,6 +82,9 @@ image_max_height = 20
 
 # Draw images. When false, images show as a text placeholder.
 images = true
+
+# Auto-scroll speed, in words per minute.
+auto_scroll_wpm = 200
 
 # Optional per-role colors. Values are "#rrggbb".
 [colors]

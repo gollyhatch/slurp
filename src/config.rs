@@ -26,6 +26,8 @@ pub struct Config {
     pub image_max_height: u16,
     /// Draw inline images. When `false`, images show as a text placeholder.
     pub images: bool,
+    /// Auto-scroll reading speed in words per minute.
+    pub auto_scroll_wpm: u16,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
     pub colors: BTreeMap<String, String>,
 }
@@ -39,6 +41,7 @@ impl Default for Config {
             paragraph_spacing: 1,
             image_max_height: 20,
             images: true,
+            auto_scroll_wpm: 200,
             colors: BTreeMap::new(),
         }
     }
@@ -89,6 +92,9 @@ impl Config {
         if self.image_max_height < 2 || self.image_max_height > 100 {
             bail!("image_max_height must be between 2 and 100");
         }
+        if !(25..=1000).contains(&self.auto_scroll_wpm) {
+            bail!("auto_scroll_wpm must be between 25 and 1000");
+        }
         if self.theme.trim().is_empty() {
             bail!("theme must not be empty");
         }
@@ -120,6 +126,7 @@ mod tests {
             paragraph_spacing = 0
             image_max_height = 12
             images = false
+            auto_scroll_wpm = 300
 
             [colors]
             text = "#cdd6f4"
@@ -130,6 +137,7 @@ mod tests {
         assert_eq!(config.theme, "catppuccin-mocha");
         assert_eq!(config.text_width, 100);
         assert!(!config.images);
+        assert_eq!(config.auto_scroll_wpm, 300);
         assert_eq!(config.colors.len(), 2);
     }
 

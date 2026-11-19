@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -90,6 +91,12 @@ pub struct App {
     pending_progress: Option<f32>,
     chapter_chars: Vec<usize>,
     total_chars: usize,
+    chapter_words: Vec<usize>,
+    auto_scroll: bool,
+    auto_scroll_wpm: u16,
+    auto_scroll_accumulator: f64,
+    auto_scroll_idle: f64,
+    last_tick: Instant,
 }
 
 impl App {
@@ -110,6 +117,17 @@ impl App {
             })
             .collect();
         let total_chars = chapter_chars.iter().sum();
+        let chapter_words: Vec<usize> = book
+            .chapters
+            .iter()
+            .map(|chapter| {
+                chapter
+                    .plain
+                    .iter()
+                    .map(|text| text.split_whitespace().count())
+                    .sum()
+            })
+            .collect();
 
         let book_key = fs::canonicalize(book_path)
             .unwrap_or_else(|_| book_path.to_path_buf())
@@ -126,6 +144,7 @@ impl App {
 
         let images = config.images;
         let content_width = config.text_width;
+        let auto_scroll_wpm = config.auto_scroll_wpm;
         let mut app = Self {
             book,
             config,
@@ -162,6 +181,12 @@ impl App {
             pending_progress: saved.map(|position| position.progress),
             chapter_chars,
             total_chars,
+            chapter_words,
+            auto_scroll: false,
+            auto_scroll_wpm,
+            auto_scroll_accumulator: 0.0,
+            auto_scroll_idle: 0.0,
+            last_tick: Instant::now(),
         };
         app.rebuild_view();
         Ok(app)
@@ -371,6 +396,9 @@ impl App {
                     if self.images { "on" } else { "off" }
                 ));
             }
+            KeyCode::Char('a') => self.toggle_auto_scroll(),
+            KeyCode::Char('[') => self.adjust_auto_scroll_speed(-25),
+            KeyCode::Char(']') => self.adjust_auto_scroll_speed(25),
             KeyCode::Char('+') | KeyCode::Char('=') => self.adjust_width(4),
             KeyCode::Char('-') | KeyCode::Char('_') => self.adjust_width(-4),
             KeyCode::Char('?') => self.mode = Mode::Help,
@@ -558,6 +586,105 @@ impl App {
         self.scroll = 0;
         self.rebuild_view();
         let _ = self.save_position();
+    }
+
+    fn toggle_auto_scroll(&mut self) {
+        self.auto_scroll = !self.auto_scroll;
+        self.auto_scroll_accumulator = 0.0;
+        self.auto_scroll_idle = 0.0;
+        self.last_tick = Instant::now();
+        self.message = if self.auto_scroll {
+            None
+        } else {
+            Some("auto-scroll: off".to_string())
+        };
+    }
+
+    fn adjust_auto_scroll_speed(&mut self, delta: i32) {
+        let wpm =
+            (i32::from(self.auto_scroll_wpm) + delta).clamp(25, 1000) as u16;
+        if wpm != self.auto_scroll_wpm {
+            self.auto_scroll_wpm = wpm;
+            self.message = if self.auto_scroll {
+                None
+            } else {
+                Some(format!("auto-scroll: {wpm} wpm"))
+            };
+        }
+    }
+
+    /// Wait time used by the event loop.
+    pub fn poll_timeout(&self) -> Duration {
+        Duration::from_millis(if self.auto_scroll { 100 } else { 250 })
+    }
+
+    /// Advance auto-scroll for the time since the last tick.
+    pub fn tick(&mut self) {
+        let now = Instant::now();
+        let elapsed = now
+            .saturating_duration_since(self.last_tick)
+            .min(Duration::from_millis(500));
+        self.last_tick = now;
+        self.advance_auto_scroll(elapsed);
+    }
+
+    fn advance_auto_scroll(&mut self, elapsed: Duration) {
+        if !self.auto_scroll || self.mode != Mode::Normal {
+            return;
+        }
+
+        let max = self.max_scroll();
+        if self.scroll >= max {
+            self.auto_scroll_idle += elapsed.as_secs_f64();
+            if self.auto_scroll_idle < self.end_of_chapter_delay() {
+                return;
+            }
+            self.auto_scroll_idle = 0.0;
+            if self.chapter + 1 < self.book.chapters.len() {
+                self.open_chapter(self.chapter + 1);
+            } else {
+                self.auto_scroll = false;
+                self.message = Some("auto-scroll: end of book".to_string());
+            }
+            return;
+        }
+
+        let rate = self.auto_scroll_rows_per_second();
+        if rate <= 0.0 {
+            return;
+        }
+        self.auto_scroll_accumulator += rate * elapsed.as_secs_f64();
+        let rows = self.auto_scroll_accumulator.floor() as i64;
+        if rows > 0 {
+            self.auto_scroll_accumulator -= rows as f64;
+            self.scroll_by(rows);
+        }
+    }
+
+    fn auto_scroll_rows_per_second(&self) -> f64 {
+        let words = self.chapter_words.get(self.chapter).copied().unwrap_or(0);
+        let rows = self.view.total_rows.max(1);
+        if words == 0 {
+            return 0.0;
+        }
+        let words_per_row = words as f64 / rows as f64;
+        if words_per_row <= 0.0 {
+            return 0.0;
+        }
+        let rows_per_minute = f64::from(self.auto_scroll_wpm) / words_per_row;
+        (rows_per_minute / 60.0).clamp(0.0, 20.0)
+    }
+
+    fn end_of_chapter_delay(&self) -> f64 {
+        if self.view.total_rows <= usize::from(self.viewport_rows) {
+            let words =
+                self.chapter_words.get(self.chapter).copied().unwrap_or(0)
+                    as f64;
+            let wpm = f64::from(self.auto_scroll_wpm).max(1.0);
+            (words / (wpm / 60.0)).clamp(0.5, 15.0)
+        } else {
+            0.8
+        }
     }
 
     fn next_paragraph(&mut self) {
@@ -955,7 +1082,12 @@ impl App {
         if !self.images {
             left.push_str("  [images off]");
         }
-        let right = format!("{progress}%  ? help ");
+        let auto = if self.auto_scroll {
+            format!("auto {}wpm  ", self.auto_scroll_wpm)
+        } else {
+            String::new()
+        };
+        let right = format!("{auto}{progress}%  ? help ");
         let line = bar_line(&left, &right, area.width, self.palette.status());
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -1278,6 +1410,8 @@ impl App {
             " Space        next paragraph",
             " PgDn / PgUp  page down / up",
             " b            page up",
+            " a            toggle auto-scroll",
+            " [ / ]        slower / faster auto-scroll",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
             " t            contents (type to filter)",
@@ -1490,6 +1624,76 @@ mod tests {
         assert_eq!(app.chapter(), 0);
         assert_eq!(app.scroll(), 0);
         assert_eq!(app.book_percent(), 0);
+    }
+
+    #[test]
+    fn auto_scroll_advances_the_view() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+        let before = app.scroll();
+
+        app.advance_auto_scroll(Duration::from_secs(60));
+
+        assert!(app.scroll() > before);
+        assert!(screen(&mut app).contains("auto 200wpm"));
+    }
+
+    #[test]
+    fn auto_scroll_pauses_in_popups() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+
+        let before = app.scroll();
+        press(&mut app, KeyCode::Char('t'));
+        app.advance_auto_scroll(Duration::from_secs(60));
+        assert_eq!(app.scroll(), before);
+        press(&mut app, KeyCode::Esc);
+    }
+
+    #[test]
+    fn auto_scroll_moves_to_the_next_chapter() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.chapter(), 0);
+
+        app.advance_auto_scroll(Duration::from_secs(30));
+
+        assert_eq!(app.chapter(), 1);
+    }
+
+    #[test]
+    fn auto_scroll_stops_at_the_end_of_the_book() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('%'));
+        type_text(&mut app, "100");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('a'));
+
+        app.advance_auto_scroll(Duration::from_secs(120));
+
+        assert!(screen(&mut app).contains("auto-scroll: end of book"));
+    }
+
+    #[test]
+    fn changes_auto_scroll_speed() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char(']'));
+        press(&mut app, KeyCode::Char(']'));
+        assert!(screen(&mut app).contains("auto 250wpm"));
     }
 
     #[test]
