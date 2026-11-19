@@ -274,7 +274,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
             KeyCode::Char('d') => self.scroll_by(half),
             KeyCode::Char('u') => self.scroll_by(-half),
-            KeyCode::Char(' ') | KeyCode::PageDown => self.scroll_by(page),
+            KeyCode::Char(' ') => self.next_paragraph(),
+            KeyCode::PageDown => self.scroll_by(page),
             KeyCode::Char('b') | KeyCode::PageUp => self.scroll_by(-page),
             KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
             KeyCode::Char('G') | KeyCode::End => {
@@ -380,6 +381,14 @@ impl App {
         self.toc_selected = index;
         self.rebuild_view();
         let _ = self.save_position();
+    }
+
+    fn next_paragraph(&mut self) {
+        let max = self.max_scroll();
+        self.scroll = match self.view.next_paragraph_row(self.scroll) {
+            Some(top) => top.min(max),
+            None => max,
+        };
     }
 
     fn scroll_by(&mut self, delta: i64) {
@@ -834,7 +843,9 @@ impl App {
         const HELP: &[&str] = &[
             " j / k        line down / up",
             " d / u        half page down / up",
-            " Space / b    page down / up",
+            " Space        next paragraph",
+            " PgDn / PgUp  page down / up",
+            " b            page up",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
             " t            table of contents",
@@ -1034,6 +1045,30 @@ mod tests {
             .any(|item| matches!(item, layout::Item::Image { .. })));
         let text = screen(&mut app);
         assert!(text.contains("images off"));
+    }
+
+    #[test]
+    fn space_moves_to_the_next_paragraph() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        screen(&mut app);
+        assert_eq!(app.scroll(), 0);
+
+        press(&mut app, KeyCode::Char(' '));
+        let second = app.scroll();
+        assert!(second > 0);
+        assert!(
+            app.view()
+                .paragraph_starts
+                .iter()
+                .any(|index| app.view().tops[*index] == second),
+            "space must stop at a paragraph start"
+        );
+
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.scroll() > second);
     }
 
     #[test]

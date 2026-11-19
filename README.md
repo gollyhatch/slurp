@@ -35,7 +35,8 @@ The binary is `target/release/slurp`.
 | --- | --- |
 | `j` / `k`, `Down` / `Up` | Scroll one line |
 | `d` / `u` | Scroll half a page |
-| `Space` / `b`, `PageDown` / `PageUp` | Scroll one page |
+| `Space` | Start of the next paragraph |
+| `PageDown` / `PageUp`, `b` | Scroll one page (`b` goes up) |
 | `g` / `G`, `Home` / `End` | Start or end of the chapter |
 | `h` / `l`, `Left` / `Right` | Previous or next chapter |
 | `t` | Table of contents |

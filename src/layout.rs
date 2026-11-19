@@ -69,6 +69,8 @@ pub struct View {
     pub total_rows: usize,
     /// First item index per source block.
     pub block_first_item: Vec<usize>,
+    /// Item indexes that start a paragraph-like block.
+    pub paragraph_starts: Vec<usize>,
     pub width: u16,
 }
 
@@ -80,8 +82,17 @@ impl View {
             tops: vec![0],
             total_rows: 0,
             block_first_item: Vec::new(),
+            paragraph_starts: Vec::new(),
             width: 0,
         }
+    }
+
+    /// Row of the first paragraph start below `row`.
+    pub fn next_paragraph_row(&self, row: usize) -> Option<usize> {
+        self.paragraph_starts
+            .iter()
+            .map(|index| self.tops[*index])
+            .find(|top| *top > row)
     }
 
     /// Rows used by an item.
@@ -176,6 +187,7 @@ pub fn build(
 
     let mut items: Vec<Item> = Vec::new();
     let mut block_first_item = Vec::with_capacity(chapter.blocks.len());
+    let mut paragraph_starts = Vec::new();
     let mut last_was_list = false;
 
     for (index, block) in chapter.blocks.iter().enumerate() {
@@ -191,7 +203,8 @@ pub fn build(
             push_blanks(&mut items, gap, index);
         }
 
-        block_first_item.push(items.len());
+        let start_index = items.len();
+        block_first_item.push(start_index);
 
         match block {
             Block::Heading { level, content } => {
@@ -360,6 +373,12 @@ pub fn build(
             }
         }
 
+        if !is_line
+            && !matches!(block, Block::Rule)
+            && items.len() > start_index
+        {
+            paragraph_starts.push(start_index);
+        }
         last_was_list = is_list;
     }
 
@@ -376,6 +395,7 @@ pub fn build(
         tops,
         total_rows: row,
         block_first_item,
+        paragraph_starts,
         width: options.width,
     }
 }
@@ -780,6 +800,8 @@ mod tests {
         }
         assert_eq!(view.block_first_item.len(), 3);
         assert!(view.find_hit(1, "gamma", 0).is_some());
+        assert_eq!(view.paragraph_starts, vec![0, 2, 5]);
+        assert_eq!(view.next_paragraph_row(0), Some(2));
 
         let highlighted = build(
             &chapter,
@@ -805,6 +827,57 @@ mod tests {
             .spans
             .iter()
             .any(|span| span.style.bg == Some(ratatui::style::Color::Red)));
+    }
+
+    #[test]
+    fn skips_soft_line_breaks_in_paragraph_navigation() {
+        let chapter = Chapter {
+            href: "ch1.xhtml".into(),
+            title: "One".into(),
+            blocks: vec![
+                Block::Paragraph(vec![Inline {
+                    text: "one".into(),
+                    flags: InlineFlags::default(),
+                }]),
+                Block::Line(vec![Inline {
+                    text: "line two".into(),
+                    flags: InlineFlags::default(),
+                }]),
+                Block::Paragraph(vec![Inline {
+                    text: "three".into(),
+                    flags: InlineFlags::default(),
+                }]),
+            ],
+            plain: vec!["one".into(), "line two".into(), "three".into()],
+        };
+        let palette = crate::theme::Palette {
+            text: ratatui::style::Color::White,
+            background: ratatui::style::Color::Black,
+            heading: ratatui::style::Color::Yellow,
+            accent: ratatui::style::Color::Cyan,
+            muted: ratatui::style::Color::Gray,
+            search: ratatui::style::Color::Red,
+            search_text: ratatui::style::Color::Black,
+            status_bg: ratatui::style::Color::Blue,
+            status_fg: ratatui::style::Color::White,
+            border: ratatui::style::Color::Gray,
+            selection: ratatui::style::Color::DarkGray,
+        };
+        let options = Options {
+            width: 40,
+            paragraph_spacing: 1,
+            image_max_rows: 10,
+            images: true,
+            query: None,
+        };
+        let view =
+            build(&chapter, &palette, &options, &Picker::halfblocks(), |_| {
+                None
+            });
+        assert_eq!(view.paragraph_starts, vec![0, 3]);
+        assert_eq!(view.next_paragraph_row(0), Some(3));
+        assert_eq!(view.next_paragraph_row(1), Some(3));
+        assert_eq!(view.next_paragraph_row(3), None);
     }
 
     #[test]

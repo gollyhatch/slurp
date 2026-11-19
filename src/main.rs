@@ -25,7 +25,8 @@ Options:
   -V, --version         Show the version
 
 Keys:
-  j/k, d/u, Space/b scroll; g/G top/bottom; h/l chapter; t contents;
+  j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
+  h/l chapter; t contents;
   % search; n/N next/previous match; i toggle images; T next theme;
   +/- text width; ? help; q quit
 
