@@ -2,7 +2,8 @@
 
 use std::env;
 use std::io::stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use ratatui::crossterm::event::{
@@ -11,13 +12,16 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use slurp::app::App;
 use slurp::config::Config;
-use slurp::state;
+use slurp::library::{Library, LibraryAction};
+use slurp::state::{self, Store};
 
 const USAGE: &str = "\
 slurp - a terminal EPUB reader
 
 Usage:
-  slurp [OPTIONS] <BOOK.epub>
+  slurp [OPTIONS] [BOOK.epub]
+
+Without a book, slurp opens the recent-books list.
 
 Options:
   -c, --config <FILE>   Use a specific config file
@@ -87,11 +91,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let Some(book_path) = args.book.clone() else {
-        print!("{USAGE}");
-        bail!("no book given");
-    };
-
     let mut config = Config::load(args.config.as_deref())?;
     if let Some(theme) = &args.theme {
         config.theme = theme.clone();
@@ -102,16 +101,70 @@ fn main() -> Result<()> {
     config.validate()?;
 
     let state_path = args.state.clone().unwrap_or_else(state::default_path);
+    let book = args.book.clone();
 
-    let mut app = App::new(&book_path, config, detect_picker(), state_path)?;
     let mut terminal =
         ratatui::try_init().context("cannot initialize the terminal")?;
     // Terminals without mouse support keep working with the keyboard.
     let _ = execute!(stdout(), EnableMouseCapture);
-    let result = run(&mut terminal, &mut app);
+    let result = session(&mut terminal, config, state_path, book);
     let _ = execute!(stdout(), DisableMouseCapture);
     let _ = ratatui::try_restore();
     result
+}
+
+/// Run the reader or the recent book list, then return to the shell.
+fn session(
+    terminal: &mut ratatui::DefaultTerminal,
+    config: Config,
+    state_path: PathBuf,
+    book: Option<PathBuf>,
+) -> Result<()> {
+    let Some(book_path) = book else {
+        return show_library(terminal, config, state_path);
+    };
+    let mut app = App::new(&book_path, config, detect_picker(), state_path)?;
+    run(terminal, &mut app)
+}
+
+/// Show the recent book list until the user opens a book or quits.
+fn show_library(
+    terminal: &mut ratatui::DefaultTerminal,
+    config: Config,
+    state_path: PathBuf,
+) -> Result<()> {
+    let mut library = Library::new(Store::load(&state_path));
+    loop {
+        terminal.draw(|frame| library.draw(frame))?;
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        match library.handle_key(key) {
+            LibraryAction::Quit => return Ok(()),
+            LibraryAction::Open(_) => {
+                let Some(path) = library.selected_path().map(str::to_owned)
+                else {
+                    continue;
+                };
+                match App::new(
+                    Path::new(&path),
+                    config.clone(),
+                    detect_picker(),
+                    state_path.clone(),
+                ) {
+                    Ok(mut app) => {
+                        run(terminal, &mut app)?;
+                        return Ok(());
+                    }
+                    Err(error) => library.set_message(format!("{error:#}")),
+                }
+            }
+            LibraryAction::None => {}
+        }
+    }
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {

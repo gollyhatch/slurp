@@ -518,6 +518,7 @@ impl App {
                 self.mode = Mode::Bookmarks;
             }
             KeyCode::Char('s') => self.mode = Mode::Stats,
+            KeyCode::Char('S') => self.save_settings(),
             KeyCode::Char('%') => {
                 self.input.clear();
                 self.mode = Mode::Percent;
@@ -1384,6 +1385,16 @@ impl App {
             (chapter_words as f64 * 60.0 / wpm).round() as u64,
             (book_words as f64 * 60.0 / wpm).round() as u64,
         )
+    }
+
+    /// Write the changed settings to the config file.
+    fn save_settings(&mut self) {
+        self.config.images = self.images;
+        self.config.auto_scroll_wpm = self.auto_scroll_wpm;
+        self.message = Some(match self.config.save_runtime() {
+            Ok(path) => format!("settings saved to {}", path.display()),
+            Err(error) => error.to_string(),
+        });
     }
 
     /// Keep the previewed theme.
@@ -2783,6 +2794,34 @@ mod tests {
 
         assert_eq!(app.mode(), Mode::Toc);
         assert_eq!(app.chapter(), 0);
+    }
+
+    #[test]
+    fn saves_settings_with_s() {
+        let fixture = crate::testutil::sample_book();
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        std::fs::write(&config_path, "# keep\n").unwrap();
+        let state_path = directory.path().join("positions.toml");
+        let mut app = App::new(
+            &fixture.path,
+            Config {
+                path: Some(config_path.clone()),
+                ..Config::default()
+            },
+            Picker::halfblocks(),
+            state_path,
+        )
+        .unwrap();
+        screen(&mut app);
+
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('S'));
+
+        assert!(screen(&mut app).contains("settings saved to"));
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("# keep"));
+        assert!(written.contains("images = false"));
     }
 
     #[test]

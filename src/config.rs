@@ -34,6 +34,9 @@ pub struct Config {
     pub continuous: bool,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
     pub colors: BTreeMap<String, String>,
+    /// File the configuration was loaded from, if any.
+    #[serde(skip)]
+    pub path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -49,6 +52,7 @@ impl Default for Config {
             reading_wpm: 250,
             continuous: false,
             colors: BTreeMap::new(),
+            path: None,
         }
     }
 }
@@ -71,17 +75,61 @@ impl Config {
             if required {
                 bail!("config file not found: {}", path.display());
             }
-            return Ok(Self::default());
+            return Ok(Self {
+                path: Some(path),
+                ..Self::default()
+            });
         }
 
         let text = fs::read_to_string(&path).with_context(|| {
             format!("cannot read config file {}", path.display())
         })?;
-        let config: Self = toml::from_str(&text).with_context(|| {
+        let mut config: Self = toml::from_str(&text).with_context(|| {
             format!("invalid config file {}", path.display())
         })?;
+        config.path = Some(path);
         config.validate()?;
         Ok(config)
+    }
+
+    /// Write the runtime settings back to the config file.
+    ///
+    /// Only the settings that change while reading are written; other keys
+    /// and comments stay as they are.
+    pub fn save_runtime(&self) -> Result<PathBuf> {
+        let path = self.path.clone().context("no config file path")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("cannot create {}", parent.display())
+            })?;
+        }
+
+        let mut document = if path.exists() {
+            let text = fs::read_to_string(&path).with_context(|| {
+                format!("cannot read config file {}", path.display())
+            })?;
+            text.parse::<toml_edit::DocumentMut>().with_context(|| {
+                format!("invalid config file {}", path.display())
+            })?
+        } else {
+            toml_edit::DocumentMut::new()
+        };
+
+        document["theme"] = toml_edit::value(self.theme.clone());
+        document["text_width"] = toml_edit::value(i64::from(self.text_width));
+        document["continuous"] = toml_edit::value(self.continuous);
+        document["images"] = toml_edit::value(self.images);
+        document["auto_scroll_wpm"] =
+            toml_edit::value(i64::from(self.auto_scroll_wpm));
+
+        let temporary = path.with_extension("toml.tmp");
+        fs::write(&temporary, document.to_string()).with_context(|| {
+            format!("cannot write {}", temporary.display())
+        })?;
+        fs::rename(&temporary, &path).with_context(|| {
+            format!("cannot replace {}", path.display())
+        })?;
+        Ok(path)
     }
 
     /// Check all values for sane bounds.
@@ -152,6 +200,41 @@ mod tests {
         assert_eq!(config.reading_wpm, 320);
         assert!(config.continuous);
         assert_eq!(config.colors.len(), 2);
+    }
+
+    #[test]
+    fn save_runtime_keeps_comments_and_updates_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "# keep me\ntheme = \"nord\"\n").unwrap();
+
+        let mut config = Config {
+            path: Some(path.clone()),
+            ..Config::default()
+        };
+        config.theme = "catppuccin-mocha".into();
+        config.text_width = 100;
+        config.continuous = true;
+        config.images = false;
+        config.auto_scroll_wpm = 300;
+
+        let written = config.save_runtime().unwrap();
+        assert_eq!(written, path);
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# keep me"));
+        let loaded: Config = toml::from_str(&text).unwrap();
+        assert_eq!(loaded.theme, "catppuccin-mocha");
+        assert_eq!(loaded.text_width, 100);
+        assert!(loaded.continuous);
+        assert!(!loaded.images);
+        assert_eq!(loaded.auto_scroll_wpm, 300);
+    }
+
+    #[test]
+    fn save_runtime_needs_a_path() {
+        let config = Config::default();
+        assert!(config.save_runtime().is_err());
     }
 
     #[test]

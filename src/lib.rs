@@ -5,6 +5,7 @@ pub mod book;
 pub mod config;
 pub mod html;
 pub mod layout;
+pub mod library;
 pub mod state;
 pub mod theme;
 

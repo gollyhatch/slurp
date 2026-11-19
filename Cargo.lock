@@ -1789,6 +1789,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "toml_edit",
  "unicode-width",
 ]
 
