@@ -18,6 +18,7 @@ table of contents, including several chapters inside one file.
 - Remembers the chapter and scroll position for each book and returns to the
   same place on the next start.
 - Uses the 39 built-in [opaline](https://crates.io/crates/opaline) themes.
+  Press `Ctrl+T` to search the themes and preview them live.
   Every color role can be overridden in the config file.
 - Images can be turned off from the config file or with `i`.
 
@@ -44,7 +45,7 @@ The binary is `target/release/slurp`.
 | `Enter` | Run the search, or open the selected chapter |
 | `n` / `N` | Next or previous match |
 | `i` | Toggle images |
-| `T` | Next built-in theme |
+| `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
 | `?` | Show the key help |
 | `Esc` | Close a popup or clear the search |

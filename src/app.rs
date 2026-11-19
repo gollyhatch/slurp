@@ -33,6 +33,7 @@ pub enum Mode {
     Search,
     Toc,
     Help,
+    Theme,
 }
 
 /// One search result.
@@ -70,6 +71,11 @@ pub struct App {
     search_before: Option<Search>,
     toc_selected: usize,
     toc_offset: usize,
+    theme_matches: Vec<usize>,
+    theme_filter: String,
+    theme_selected: usize,
+    theme_offset: usize,
+    theme_before: Option<(String, Palette)>,
     images: bool,
     message: Option<String>,
     quit: bool,
@@ -126,6 +132,11 @@ impl App {
             search_before: None,
             toc_selected: chapter,
             toc_offset: 0,
+            theme_matches: Vec::new(),
+            theme_filter: String::new(),
+            theme_selected: 0,
+            theme_offset: 0,
+            theme_before: None,
             message: None,
             quit: false,
             image_dimensions: HashMap::new(),
@@ -147,6 +158,11 @@ impl App {
     /// Current input mode.
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Identifier of the applied theme.
+    pub fn theme_name(&self) -> &str {
+        &self.config.theme
     }
 
     /// Current search, if a search was run.
@@ -194,11 +210,21 @@ impl App {
             return Ok(true);
         }
 
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+        {
+            if self.mode != Mode::Theme {
+                self.open_theme_selector();
+            }
+            return Ok(false);
+        }
+
         self.message = None;
         match self.mode {
             Mode::Normal => self.key_normal(key),
             Mode::Search => self.key_search(key),
             Mode::Toc => self.key_toc(key),
+            Mode::Theme => self.key_theme(key),
             Mode::Help => {
                 if matches!(
                     key.code,
@@ -246,6 +272,7 @@ impl App {
         match self.mode {
             Mode::Toc => self.draw_toc(frame, area),
             Mode::Help => self.draw_help(frame, area),
+            Mode::Theme => self.draw_theme_selector(frame, area),
             _ => {}
         }
 
@@ -301,7 +328,6 @@ impl App {
             }
             KeyCode::Char('n') => self.next_match(true),
             KeyCode::Char('N') => self.next_match(false),
-            KeyCode::Char('T') => self.cycle_theme(),
             KeyCode::Char('i') => {
                 self.images = !self.images;
                 self.rebuild_view();
@@ -509,25 +535,118 @@ impl App {
         self.jump_to_current_hit();
     }
 
-    fn cycle_theme(&mut self) {
-        let names = theme::builtin_names();
-        if names.is_empty() {
-            return;
-        }
-        let index = names
+    fn open_theme_selector(&mut self) {
+        self.theme_before =
+            Some((self.config.theme.clone(), self.palette.clone()));
+        self.theme_filter.clear();
+        self.theme_matches = (0..theme::builtin_names().len()).collect();
+        self.theme_selected = theme::builtin_names()
             .iter()
             .position(|(id, _)| *id == self.config.theme)
-            .map(|index| (index + 1) % names.len())
             .unwrap_or(0);
-        let (id, display) = names[index];
+        self.theme_offset = 0;
+        self.mode = Mode::Theme;
+        if self.theme_matches.is_empty() {
+            self.message = Some("no built-in themes".to_string());
+        }
+    }
+
+    fn refresh_theme_matches(&mut self) {
+        let needle = self.theme_filter.to_lowercase();
+        self.theme_matches = theme::builtin_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, (id, name))| {
+                needle.is_empty()
+                    || id.to_lowercase().contains(&needle)
+                    || name.to_lowercase().contains(&needle)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.theme_selected = 0;
+        self.preview_theme();
+    }
+
+    fn preview_theme(&mut self) {
+        let Some(&index) = self.theme_matches.get(self.theme_selected) else {
+            return;
+        };
+        let (id, _) = theme::builtin_names()[index];
+        if id == self.config.theme {
+            return;
+        }
         match theme::load(id, &self.config.colors) {
             Ok((_theme, palette)) => {
                 self.config.theme = id.to_string();
                 self.palette = palette;
                 self.rebuild_view();
-                self.message = Some(format!("theme: {display}"));
             }
             Err(error) => self.message = Some(error.to_string()),
+        }
+    }
+
+    fn select_theme(&mut self, delta: i64) {
+        if self.theme_matches.is_empty() {
+            return;
+        }
+        let last = self.theme_matches.len() - 1;
+        let index =
+            (self.theme_selected as i64 + delta).clamp(0, last as i64) as usize;
+        if index != self.theme_selected {
+            self.theme_selected = index;
+            self.preview_theme();
+        }
+    }
+
+    fn restore_theme(&mut self) {
+        if let Some((name, palette)) = self.theme_before.take() {
+            self.config.theme = name;
+            self.palette = palette;
+            self.rebuild_view();
+        }
+    }
+
+    fn key_theme(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.restore_theme();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.theme_before = None;
+                self.mode = Mode::Normal;
+                let name = theme::builtin_names()
+                    .iter()
+                    .find(|(id, _)| *id == self.config.theme)
+                    .map(|(_, name)| *name)
+                    .unwrap_or(self.config.theme.as_str());
+                self.message = Some(format!("theme: {name}"));
+            }
+            KeyCode::Down => self.select_theme(1),
+            KeyCode::Up => self.select_theme(-1),
+            KeyCode::PageDown => self.select_theme(10),
+            KeyCode::PageUp => self.select_theme(-10),
+            KeyCode::Home => {
+                self.theme_selected = 0;
+                self.preview_theme();
+            }
+            KeyCode::End => {
+                self.theme_selected =
+                    self.theme_matches.len().saturating_sub(1);
+                self.preview_theme();
+            }
+            KeyCode::Backspace => {
+                self.theme_filter.pop();
+                self.refresh_theme_matches();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.theme_filter.push(ch);
+                self.refresh_theme_matches();
+            }
+            _ => {}
         }
     }
 
@@ -839,6 +958,94 @@ impl App {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn draw_theme_selector(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width < 24 || area.height < 6 {
+            return;
+        }
+        let width = 64.min(area.width.saturating_sub(4)).max(24);
+        let max_list = usize::from(area.height.saturating_sub(6).max(1));
+        let visible = self.theme_matches.len().min(max_list);
+        let height = (visible as u16 + 4)
+            .min(area.height.saturating_sub(2))
+            .max(6);
+        let rect = centered(area, width, height);
+        frame.render_widget(Clear, rect);
+
+        let block = Block::bordered()
+            .title(" Themes ")
+            .border_style(self.palette.border_style())
+            .style(self.palette.base());
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+
+        let [search_area, list_area, hint_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+
+        let label = "filter: ";
+        let mut search = String::from(label);
+        search.push_str(&self.theme_filter);
+        frame.render_widget(
+            Paragraph::new(Line::styled(search, self.palette.muted())),
+            search_area,
+        );
+        let cursor_x = search_area
+            .x
+            .saturating_add(layout::display_width(label) as u16)
+            .saturating_add(layout::display_width(&self.theme_filter) as u16);
+        if cursor_x < search_area.right() {
+            frame.set_cursor_position(Position::new(cursor_x, search_area.y));
+        }
+
+        let rows = usize::from(list_area.height);
+        if self.theme_selected < self.theme_offset {
+            self.theme_offset = self.theme_selected;
+        } else if rows > 0 && self.theme_selected >= self.theme_offset + rows {
+            self.theme_offset = self.theme_selected + 1 - rows;
+        }
+
+        let names = theme::builtin_names();
+        let mut lines = Vec::new();
+        if self.theme_matches.is_empty() {
+            lines.push(Line::styled(
+                " no matching themes",
+                self.palette.muted(),
+            ));
+        } else {
+            for index in
+                self.theme_offset..self.theme_offset.saturating_add(rows)
+            {
+                let Some(&name_index) = self.theme_matches.get(index) else {
+                    break;
+                };
+                let (id, name) = names[name_index];
+                let selected = index == self.theme_selected;
+                let style = if selected {
+                    self.palette.selected()
+                } else {
+                    self.palette.base()
+                };
+                let marker = if selected { "\u{25b8}" } else { " " };
+                lines.push(Line::styled(
+                    format!("{marker} {name}  ({id})"),
+                    style,
+                ));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), list_area);
+
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " enter apply   esc cancel   up/down select ",
+                self.palette.muted(),
+            )),
+            hint_area,
+        );
+    }
+
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         const HELP: &[&str] = &[
             " j / k        line down / up",
@@ -852,7 +1059,7 @@ impl App {
             " % or /       full-text search",
             " n / N        next / previous match",
             " i            toggle images",
-            " T            next theme",
+            " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
             " ?            this help",
             " q            quit",
@@ -966,6 +1173,11 @@ mod tests {
         }
     }
 
+    fn press_ctrl(app: &mut App, code: KeyCode) {
+        let key = KeyEvent::new(code, KeyModifiers::CONTROL);
+        assert!(!app.handle_key(key).unwrap());
+    }
+
     #[test]
     fn draws_first_chapter() {
         let fixture = crate::testutil::sample_book();
@@ -1069,6 +1281,50 @@ mod tests {
 
         press(&mut app, KeyCode::Char(' '));
         assert!(app.scroll() > second);
+    }
+
+    #[test]
+    fn theme_selector_previews_and_restores() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        let before = app.theme_name().to_string();
+
+        press_ctrl(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.mode(), Mode::Theme);
+        type_text(&mut app, "nord");
+        let text = screen(&mut app);
+        assert!(text.contains("nord"));
+        assert_eq!(app.theme_name(), "nord");
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.theme_name(), before);
+    }
+
+    #[test]
+    fn theme_selector_filters_and_applies() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+
+        press_ctrl(&mut app, KeyCode::Char('t'));
+        type_text(&mut app, "tokyo");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.theme_name(), "tokyo-night-moon");
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.theme_name(), "tokyo-night-moon");
+        assert!(screen(&mut app).contains("tokyo-night-moon"));
+    }
+
+    #[test]
+    fn theme_filter_accepts_j_and_k() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+
+        press_ctrl(&mut app, KeyCode::Char('t'));
+        type_text(&mut app, "kanagawa-wave");
+        assert_eq!(app.theme_name(), "kanagawa-wave");
     }
 
     #[test]
