@@ -2094,6 +2094,20 @@ mod tests {
     }
 
     #[test]
+    fn status_line_background_differs_from_the_page() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let status = buffer[(10, 29)].bg;
+        let body = buffer[(10, 10)].bg;
+        assert_ne!(status, body);
+    }
+
+    #[test]
     fn status_line_shows_title_and_author() {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);

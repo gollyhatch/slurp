@@ -150,7 +150,7 @@ pub fn load(
         Color::from(value)
     };
 
-    let palette = Palette {
+    let mut palette = Palette {
         text: color(&ROLES[0]),
         background: color(&ROLES[1]),
         heading: color(&ROLES[2]),
@@ -164,7 +164,32 @@ pub fn load(
         selection: color(&ROLES[10]),
     };
 
+    // A faint theme panel can look like body text. Derive a strip that always
+    // differs from the page unless the user names a status color.
+    if !overrides.contains_key("status_bg") {
+        palette.status_bg = blend(palette.background, palette.text, 0.16);
+    }
+
     Ok((theme, palette))
+}
+
+fn blend(base: Color, toward: Color, amount: f32) -> Color {
+    let (
+        Color::Rgb(base_r, base_g, base_b),
+        Color::Rgb(other_r, other_g, other_b),
+    ) = (base, toward)
+    else {
+        return base;
+    };
+    let mix = |from: u8, to: u8| -> u8 {
+        (f32::from(from) + (f32::from(to) - f32::from(from)) * amount).round()
+            as u8
+    };
+    Color::Rgb(
+        mix(base_r, other_r),
+        mix(base_g, other_g),
+        mix(base_b, other_b),
+    )
 }
 
 impl Palette {
@@ -242,6 +267,38 @@ mod tests {
         overrides.insert("text".to_string(), "#010203".to_string());
         let (_theme, palette) = load("catppuccin-mocha", &overrides).unwrap();
         assert_eq!(palette.text, Color::Rgb(1, 2, 3));
+    }
+
+    fn rgb(color: Color) -> (u8, u8, u8) {
+        match color {
+            Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected an RGB color, got {other:?}"),
+        }
+    }
+
+    fn distance(left: Color, right: Color) -> u32 {
+        let (lr, lg, lb) = rgb(left);
+        let (rr, rg, rb) = rgb(right);
+        u32::from(lr.abs_diff(rr))
+            + u32::from(lg.abs_diff(rg))
+            + u32::from(lb.abs_diff(rb))
+    }
+
+    #[test]
+    fn status_background_differs_from_the_page() {
+        for &(id, _) in builtin_names() {
+            let (_theme, palette) = load(id, &BTreeMap::new()).unwrap();
+            let distance = distance(palette.status_bg, palette.background);
+            assert!(distance > 30, "{id} has too little contrast: {distance}");
+        }
+    }
+
+    #[test]
+    fn status_background_override_is_kept() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("status_bg".to_string(), "#010203".to_string());
+        let (_theme, palette) = load("nord", &overrides).unwrap();
+        assert_eq!(palette.status_bg, Color::Rgb(1, 2, 3));
     }
 
     #[test]
