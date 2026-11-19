@@ -17,6 +17,8 @@ slurp book.epub
 - Jump anywhere in the book with `%` and a percentage.
 - Auto-scroll at a configurable speed in words per minute. It stops at
   popups and moves to the next chapter when the screen ends.
+- Optional continuous mode that scrolls through all chapters as one stream,
+  with no chapter switch needed.
 - The `t` popup uses the EPUB table of contents with fuzzy filtering. If the
   book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
@@ -52,6 +54,7 @@ The binary is `target/release/slurp`.
 | `n` / `N` | Next or previous match |
 | `i` | Toggle images |
 | `a` | Toggle auto-scroll |
+| `c` | Toggle continuous mode |
 | `[` / `]` | Slower or faster auto-scroll (25 words per minute steps) |
 | `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
@@ -85,6 +88,9 @@ images = true
 
 # Auto-scroll speed, in words per minute.
 auto_scroll_wpm = 200
+
+# Scroll through all chapters as one stream.
+continuous = false
 
 # Optional per-role colors. Values are "#rrggbb".
 [colors]

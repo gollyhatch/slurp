@@ -28,7 +28,8 @@ Keys:
   j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
   h/l chapter; t contents;
   % jump to percentage; / search; n/N next/previous match;
-  i toggle images; a auto-scroll; [ / ] speed; Ctrl+T theme selector;
+  i toggle images; a auto-scroll; [ / ] speed; c continuous mode;
+  Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
 Configuration:
@@ -41,6 +42,7 @@ Configuration:
   image_max_height = 20
   images = true
   auto_scroll_wpm = 200
+  continuous = false
 
   [colors]
   text = \"#cdd6f4\"

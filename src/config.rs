@@ -28,6 +28,8 @@ pub struct Config {
     pub images: bool,
     /// Auto-scroll reading speed in words per minute.
     pub auto_scroll_wpm: u16,
+    /// Scroll through all chapters as one continuous stream.
+    pub continuous: bool,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
     pub colors: BTreeMap<String, String>,
 }
@@ -42,6 +44,7 @@ impl Default for Config {
             image_max_height: 20,
             images: true,
             auto_scroll_wpm: 200,
+            continuous: false,
             colors: BTreeMap::new(),
         }
     }
@@ -127,6 +130,7 @@ mod tests {
             image_max_height = 12
             images = false
             auto_scroll_wpm = 300
+            continuous = true
 
             [colors]
             text = "#cdd6f4"
@@ -138,6 +142,7 @@ mod tests {
         assert_eq!(config.text_width, 100);
         assert!(!config.images);
         assert_eq!(config.auto_scroll_wpm, 300);
+        assert!(config.continuous);
         assert_eq!(config.colors.len(), 2);
     }
 

@@ -63,6 +63,7 @@ pub struct App {
     palette: Palette,
     picker: Picker,
     view: View,
+    view_cache: HashMap<usize, View>,
     chapter: usize,
     scroll: usize,
     content_width: u16,
@@ -157,6 +158,7 @@ impl App {
             palette,
             picker,
             view: View::empty(),
+            view_cache: HashMap::new(),
             chapter,
             scroll: 0,
             laid_out: false,
@@ -353,8 +355,19 @@ impl App {
             KeyCode::Char(' ') => self.next_paragraph(),
             KeyCode::PageDown => self.scroll_by(page),
             KeyCode::Char('b') | KeyCode::PageUp => self.scroll_by(-page),
-            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
+            KeyCode::Char('g') | KeyCode::Home => {
+                if self.config.continuous && self.chapter != 0 {
+                    self.switch_chapter(0);
+                }
+                self.scroll = 0;
+            }
             KeyCode::Char('G') | KeyCode::End => {
+                if self.config.continuous {
+                    let last = self.book.chapters.len() - 1;
+                    if self.chapter != last {
+                        self.switch_chapter(last);
+                    }
+                }
                 self.scroll =
                     self.snap(self.max_scroll(), true).min(self.max_scroll());
             }
@@ -396,6 +409,14 @@ impl App {
                 self.message = Some(format!(
                     "images: {}",
                     if self.images { "on" } else { "off" }
+                ));
+            }
+            KeyCode::Char('c') => {
+                self.config.continuous = !self.config.continuous;
+                self.rebuild_view();
+                self.message = Some(format!(
+                    "continuous: {}",
+                    if self.config.continuous { "on" } else { "off" }
                 ));
             }
             KeyCode::Char('a') => self.toggle_auto_scroll(),
@@ -494,9 +515,9 @@ impl App {
         self.chapter = chapter;
         self.scroll = 0;
         self.rebuild_view();
-        let max = self.max_scroll();
+        let limit = self.scroll_limit();
         let row = (fraction * self.view.total_rows as f32).round() as usize;
-        self.scroll = self.snap(row.min(max), true).min(max);
+        self.scroll = self.snap(row.min(limit), true).min(limit);
         let _ = self.save_position();
     }
 
@@ -644,20 +665,30 @@ impl App {
             return;
         }
 
-        let max = self.max_scroll();
-        if self.scroll >= max {
-            self.auto_scroll_idle += elapsed.as_secs_f64();
-            if self.auto_scroll_idle < self.end_of_chapter_delay() {
-                return;
-            }
-            self.auto_scroll_idle = 0.0;
-            if self.chapter + 1 < self.book.chapters.len() {
-                self.open_chapter(self.chapter + 1);
-            } else {
+        if self.config.continuous {
+            if self.chapter + 1 == self.book.chapters.len()
+                && self.scroll >= self.max_scroll()
+            {
                 self.auto_scroll = false;
                 self.message = Some("auto-scroll: end of book".to_string());
+                return;
             }
-            return;
+        } else {
+            let max = self.max_scroll();
+            if self.scroll >= max {
+                self.auto_scroll_idle += elapsed.as_secs_f64();
+                if self.auto_scroll_idle < self.end_of_chapter_delay() {
+                    return;
+                }
+                self.auto_scroll_idle = 0.0;
+                if self.chapter + 1 < self.book.chapters.len() {
+                    self.open_chapter(self.chapter + 1);
+                } else {
+                    self.auto_scroll = false;
+                    self.message = Some("auto-scroll: end of book".to_string());
+                }
+                return;
+            }
         }
 
         let rate = self.auto_scroll_rows_per_second();
@@ -699,14 +730,22 @@ impl App {
     }
 
     fn next_paragraph(&mut self) {
-        let max = self.max_scroll();
-        self.scroll = match self.view.next_paragraph_row(self.scroll) {
-            Some(top) => top.min(max),
-            None => max,
-        };
+        match self.view.next_paragraph_row(self.scroll) {
+            Some(top) => self.scroll = top.min(self.scroll_limit()),
+            None if self.config.continuous
+                && self.chapter + 1 < self.book.chapters.len() =>
+            {
+                self.switch_chapter(self.chapter + 1);
+            }
+            None => self.scroll = self.max_scroll(),
+        }
     }
 
     fn scroll_by(&mut self, delta: i64) {
+        if self.config.continuous {
+            self.scroll_continuous(delta);
+            return;
+        }
         if self.view.total_rows <= usize::from(self.viewport_rows) {
             self.scroll = 0;
             return;
@@ -714,6 +753,77 @@ impl App {
         let max = self.max_scroll() as i64;
         let target = (self.scroll as i64 + delta).clamp(0, max) as usize;
         self.scroll = self.snap(target, delta >= 0).min(max as usize);
+    }
+
+    fn scroll_continuous(&mut self, delta: i64) {
+        let start_chapter = self.chapter;
+        if delta > 0 {
+            let mut remaining = usize::try_from(delta).unwrap_or(usize::MAX);
+            loop {
+                let rows = self.view.total_rows;
+                let available = rows.saturating_sub(self.scroll);
+                if remaining < available {
+                    self.scroll += remaining;
+                    break;
+                }
+                remaining -= available;
+                if self.chapter + 1 < self.book.chapters.len() {
+                    self.switch_chapter(self.chapter + 1);
+                    if remaining == 0 {
+                        break;
+                    }
+                } else {
+                    self.scroll = self.max_scroll();
+                    break;
+                }
+            }
+        } else if delta < 0 {
+            let mut back = usize::try_from(-delta).unwrap_or(usize::MAX);
+            loop {
+                if back <= self.scroll {
+                    self.scroll -= back;
+                    break;
+                }
+                back -= self.scroll;
+                if self.chapter == 0 {
+                    self.scroll = 0;
+                    break;
+                }
+                self.switch_chapter(self.chapter - 1);
+                let rows = self.view.total_rows;
+                if rows == 0 {
+                    self.scroll = 0;
+                    continue;
+                }
+                if back <= rows {
+                    self.scroll = rows - back;
+                    break;
+                }
+                back -= rows;
+                self.scroll = 0;
+            }
+        }
+        self.normalize_scroll(delta >= 0);
+        if self.chapter != start_chapter {
+            let _ = self.save_position();
+        }
+    }
+
+    fn normalize_scroll(&mut self, down: bool) {
+        if let Some((_, top, rows)) = self.view.item_at_row(self.scroll) {
+            if rows > 1 && self.scroll > top {
+                let target = if down { top + rows } else { top };
+                if target >= self.view.total_rows
+                    && down
+                    && self.chapter + 1 < self.book.chapters.len()
+                {
+                    self.switch_chapter(self.chapter + 1);
+                    return;
+                }
+                self.scroll = target;
+            }
+        }
+        self.scroll = self.scroll.min(self.scroll_limit());
     }
 
     fn snap(&self, row: usize, down: bool) -> usize {
@@ -729,6 +839,16 @@ impl App {
         self.view
             .total_rows
             .saturating_sub(usize::from(self.viewport_rows))
+    }
+
+    /// Highest valid top row for the current chapter.
+    fn scroll_limit(&self) -> usize {
+        if self.config.continuous && self.chapter + 1 < self.book.chapters.len()
+        {
+            self.view.total_rows.saturating_sub(1)
+        } else {
+            self.max_scroll()
+        }
     }
 
     fn run_search(&mut self) {
@@ -803,7 +923,7 @@ impl App {
             let top = self.view.tops[index];
             let margin = usize::from(self.viewport_rows) / 3;
             let target = top.saturating_sub(margin);
-            self.scroll = self.snap(target, true).min(self.max_scroll());
+            self.scroll = self.snap(target, true).min(self.scroll_limit());
         }
     }
 
@@ -994,12 +1114,12 @@ impl App {
         if let Some(progress) = self.pending_progress.take() {
             let total = self.view.total_rows;
             let target = (f64::from(progress) * total as f64).round() as usize;
-            let max = self.max_scroll();
-            self.scroll = self.snap(target.min(max), true).min(max);
+            let limit = self.scroll_limit();
+            self.scroll = self.snap(target.min(limit), true).min(limit);
         }
     }
 
-    fn rebuild_view(&mut self) {
+    fn build_view(&mut self, index: usize) -> View {
         let options = Options {
             width: self.content_width,
             paragraph_spacing: self.config.paragraph_spacing,
@@ -1012,12 +1132,12 @@ impl App {
         };
 
         let book = &self.book;
-        let chapter = &book.chapters[self.chapter];
+        let chapter = &book.chapters[index];
         let palette = &self.palette;
         let picker = &self.picker;
         let dimensions = &mut self.image_dimensions;
 
-        let view = layout::build(chapter, palette, &options, picker, |src| {
+        layout::build(chapter, palette, &options, picker, |src| {
             let key = book.image_key(&chapter.href, src)?;
             if let Some(size) = dimensions.get(&key) {
                 return Some((key.clone(), size.0, size.1));
@@ -1032,10 +1152,42 @@ impl App {
             }
             dimensions.insert(key.clone(), (width, height));
             Some((key, width, height))
-        });
+        })
+    }
 
-        self.view = view;
-        self.scroll = self.scroll.min(self.max_scroll());
+    fn rebuild_view(&mut self) {
+        self.view = self.build_view(self.chapter);
+        self.view_cache.clear();
+        self.scroll = self.scroll.min(self.scroll_limit());
+    }
+
+    fn ensure_view(&mut self, index: usize) {
+        if index == self.chapter || self.view_cache.contains_key(&index) {
+            return;
+        }
+        let view = self.build_view(index);
+        if self.view_cache.len() >= 8 {
+            self.view_cache.clear();
+        }
+        self.view_cache.insert(index, view);
+    }
+
+    fn view_ref(&self, index: usize) -> &View {
+        if index == self.chapter {
+            &self.view
+        } else {
+            self.view_cache.get(&index).expect("chapter view is built")
+        }
+    }
+
+    fn switch_chapter(&mut self, index: usize) {
+        if index == self.chapter || index >= self.book.chapters.len() {
+            return;
+        }
+        self.chapter = index;
+        self.view = self.build_view(index);
+        self.view_cache.clear();
+        self.scroll = 0;
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
@@ -1093,6 +1245,9 @@ impl App {
         if !self.images {
             left.push_str("  [images off]");
         }
+        if self.config.continuous {
+            left.push_str("  [continuous]");
+        }
         let auto = if self.auto_scroll {
             format!("auto {}wpm  ", self.auto_scroll_wpm)
         } else {
@@ -1105,81 +1260,117 @@ impl App {
 
     fn draw_body(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(Block::new().style(self.palette.base()), area);
-        if self.view.items.is_empty() {
+        if self.book.chapters.is_empty() {
             return;
+        }
+
+        enum Paint {
+            Line(Line<'static>),
+            Image { key: String, alt: String, cols: u16 },
         }
 
         let width = usize::from(area.width);
         let content_width = usize::from(self.content_width).min(width).max(1);
         let x = area.x + ((width - content_width) / 2) as u16;
 
-        let mut index = self
-            .view
-            .item_at_row(self.scroll)
-            .map(|(index, _, _)| index)
-            .unwrap_or(0);
+        let mut chapter = self.chapter;
+        let mut row = self.scroll;
         let mut y = area.y;
 
-        while index < self.view.items.len() && y < area.bottom() {
-            let top = self.view.tops[index];
-            let rows = u16::try_from(self.view.rows(index)).unwrap_or(u16::MAX);
-            if top < self.scroll {
-                index += 1;
+        while y < area.bottom() && chapter < self.book.chapters.len() {
+            self.ensure_view(chapter);
+
+            let (mut index, total_rows, item_count) = {
+                let view = self.view_ref(chapter);
+                (
+                    view.item_at_row(row)
+                        .map(|(index, _, _)| index)
+                        .unwrap_or(0),
+                    view.total_rows,
+                    view.items.len(),
+                )
+            };
+            if total_rows == 0 || row >= total_rows {
+                if !self.config.continuous {
+                    break;
+                }
+                chapter += 1;
+                row = 0;
                 continue;
             }
-            if y + rows > area.bottom() {
+
+            while index < item_count && y < area.bottom() {
+                let (paint, rows, top) = {
+                    let view = self.view_ref(chapter);
+                    let rows =
+                        u16::try_from(view.rows(index)).unwrap_or(u16::MAX);
+                    let top = view.tops[index];
+                    let paint = match &view.items[index] {
+                        layout::Item::Line { line, .. } => {
+                            Paint::Line(line.clone())
+                        }
+                        layout::Item::Image { key, alt, cols, .. } => {
+                            Paint::Image {
+                                key: key.clone(),
+                                alt: alt.clone(),
+                                cols: *cols,
+                            }
+                        }
+                    };
+                    (paint, rows, top)
+                };
+
+                if top < row {
+                    index += 1;
+                    continue;
+                }
+
+                let height = rows.min(area.bottom() - y);
+                match paint {
+                    Paint::Line(line) => {
+                        let rect = Rect::new(x, y, content_width as u16, 1);
+                        frame.render_widget(Paragraph::new(line), rect);
+                        y += 1;
+                    }
+                    Paint::Image { key, alt, cols } => {
+                        let image_width = cols.min(content_width as u16).max(1);
+                        let image_x =
+                            x + ((content_width as u16 - image_width) / 2);
+                        let rect = Rect::new(image_x, y, image_width, height);
+                        if let Some(protocol) =
+                            self.protocol_for(&key, image_width, rows)
+                        {
+                            frame.render_widget(
+                                Image::new(protocol).allow_clipping(true),
+                                rect,
+                            );
+                        } else {
+                            let label = if alt.is_empty() {
+                                "[image]".to_string()
+                            } else {
+                                format!("[image: {alt}]")
+                            };
+                            frame.render_widget(
+                                Paragraph::new(label)
+                                    .style(self.palette.muted()),
+                                rect,
+                            );
+                        }
+                        y = y.saturating_add(height);
+                        if height < rows {
+                            y = area.bottom();
+                        }
+                    }
+                }
+
+                index += 1;
+            }
+
+            if y >= area.bottom() || !self.config.continuous {
                 break;
             }
-
-            let line = if let layout::Item::Line { line, .. } =
-                &self.view.items[index]
-            {
-                Some(line.clone())
-            } else {
-                None
-            };
-            let image = if let layout::Item::Image { key, alt, cols, .. } =
-                &self.view.items[index]
-            {
-                Some((key.clone(), alt.clone(), *cols))
-            } else {
-                None
-            };
-
-            if let Some(line) = line {
-                let rect = Rect::new(x, y, content_width as u16, 1);
-                frame.render_widget(Paragraph::new(line), rect);
-            } else if let Some((key, alt, image_cols)) = image {
-                let image_width = image_cols.min(content_width as u16).max(1);
-                let image_x = x + ((content_width as u16 - image_width) / 2);
-                let rect = Rect::new(
-                    image_x,
-                    y,
-                    image_width,
-                    rows.min(area.bottom() - y),
-                );
-                if let Some(protocol) =
-                    self.protocol_for(&key, image_width, rows)
-                {
-                    frame.render_widget(
-                        Image::new(protocol).allow_clipping(true),
-                        rect,
-                    );
-                } else {
-                    let label = if alt.is_empty() {
-                        "[image]".to_string()
-                    } else {
-                        format!("[image: {alt}]")
-                    };
-                    frame.render_widget(
-                        Paragraph::new(label).style(self.palette.muted()),
-                        rect,
-                    );
-                }
-            }
-
-            y += rows;
-            index += 1;
+            chapter += 1;
+            row = 0;
         }
     }
 
@@ -1430,6 +1621,7 @@ impl App {
             " /            full-text search",
             " n / N        next / previous match",
             " i            toggle images",
+            " c            toggle continuous mode",
             " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
             " ?            this help",
@@ -1635,6 +1827,68 @@ mod tests {
         assert_eq!(app.chapter(), 0);
         assert_eq!(app.scroll(), 0);
         assert_eq!(app.book_percent(), 0);
+    }
+
+    #[test]
+    fn continuous_mode_scrolls_across_chapters() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+
+        press(&mut app, KeyCode::Char('c'));
+        let last = app.book.chapters.len() - 1;
+        app.scroll_by(10_000);
+        assert_eq!(app.chapter(), last);
+
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.chapter(), 0);
+        assert_eq!(app.scroll(), 0);
+
+        app.scroll_by(10_000);
+        assert_eq!(app.chapter(), last);
+        app.scroll_by(-10_000);
+        assert_eq!(app.chapter(), 0);
+        assert_eq!(app.scroll(), 0);
+    }
+
+    #[test]
+    fn auto_scroll_crosses_chapters_in_continuous_mode() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('a'));
+
+        app.advance_auto_scroll(Duration::from_secs(60));
+
+        assert!(app.chapter() > 0);
+    }
+
+    #[test]
+    fn continuous_mode_draws_the_next_chapter() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('c'));
+
+        let rows = app.view().total_rows;
+        app.scroll = rows.saturating_sub(2);
+
+        let text = screen(&mut app);
+        assert_eq!(app.chapter(), 0);
+        assert!(text.contains("Part Two"));
+    }
+
+    #[test]
+    fn normal_mode_stops_at_the_chapter_end() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+
+        app.scroll_by(10_000);
+
+        assert_eq!(app.chapter(), 0);
+        assert_eq!(app.scroll(), app.max_scroll());
     }
 
     #[test]
