@@ -14,6 +14,7 @@ use slurp::app::App;
 use slurp::config::Config;
 use slurp::library::{Library, LibraryAction};
 use slurp::state::{self, Store};
+use slurp::theme;
 
 const USAGE: &str = "\
 slurp - a terminal EPUB reader
@@ -137,7 +138,8 @@ fn show_library(
     config: Config,
     state_path: PathBuf,
 ) -> Result<()> {
-    let mut library = Library::new(Store::load(&state_path));
+    let (_theme, palette) = theme::load(&config.theme, &config.colors)?;
+    let mut library = Library::new(Store::load(&state_path), palette);
     loop {
         terminal.draw(|frame| library.draw(frame))?;
         if !event::poll(Duration::from_millis(250))? {

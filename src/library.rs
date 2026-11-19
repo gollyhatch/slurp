@@ -4,12 +4,12 @@ use std::path::Path;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::state::{BookPosition, Store};
+use crate::theme::Palette;
 
 /// What the key handler asks the caller to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,11 +28,12 @@ pub struct Library {
     selected: usize,
     offset: usize,
     message: Option<String>,
+    palette: Palette,
 }
 
 impl Library {
     /// Build the list from the stored positions, newest first.
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, palette: Palette) -> Self {
         let mut books = store.books;
         books.sort_by_key(|book| std::cmp::Reverse(book.updated));
         Self {
@@ -40,6 +41,7 @@ impl Library {
             selected: 0,
             offset: 0,
             message: None,
+            palette,
         }
     }
 
@@ -95,7 +97,10 @@ impl Library {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let block = Block::bordered().title(" Recent books ");
+        let block = Block::bordered()
+            .title(" Recent books ")
+            .border_style(self.palette.border_style())
+            .style(self.palette.base());
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
@@ -115,7 +120,10 @@ impl Library {
 
         let mut lines: Vec<Line> = Vec::new();
         if self.books.is_empty() {
-            lines.push(Line::from(" No recent books. Run: slurp BOOK.epub"));
+            lines.push(Line::styled(
+                " No recent books. Run: slurp BOOK.epub",
+                self.palette.muted(),
+            ));
         } else {
             for index in self.offset..self.offset.saturating_add(rows) {
                 let Some(book) = self.books.get(index) else {
@@ -126,14 +134,12 @@ impl Library {
         }
         frame.render_widget(Paragraph::new(lines), list_area);
 
-        let hint = match &self.message {
-            Some(message) => format!(" {message}"),
-            None => " enter open   q quit ".to_string(),
-        };
-        let style = if self.message.is_some() {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
+        let (hint, style) = match &self.message {
+            Some(message) => (
+                format!(" {message}"),
+                self.palette.base().fg(self.palette.search),
+            ),
+            None => (" enter open   q quit ".to_string(), self.palette.muted()),
         };
         frame.render_widget(
             Paragraph::new(Line::styled(hint, style)),
@@ -153,21 +159,44 @@ impl Library {
             book.title.clone()
         };
         let percent = (book.progress * 100.0).round().clamp(0.0, 100.0);
-        let mut detail = format!("Chapter {}  {percent}%", book.chapter + 1);
-        if !Path::new(&book.path).exists() {
-            detail.push_str("  [missing]");
+        let detail = format!("Chapter {}  {percent}%", book.chapter + 1);
+        let missing = !Path::new(&book.path).exists();
+        let mut used = 1 + label.chars().count() + detail.chars().count();
+        if missing {
+            used += MISSING.len();
         }
-        let width = usize::from(area.width);
-        let used = label.chars().count() + detail.chars().count() + 1;
-        let padding = width.saturating_sub(used).max(1);
-        let style = if selected {
-            Style::default().add_modifier(Modifier::REVERSED)
+        let padding = usize::from(area.width).saturating_sub(used).max(1);
+
+        let label_style = if selected {
+            self.palette.selected()
         } else {
-            Style::default()
+            self.palette.accent()
         };
-        Line::styled(format!(" {label}{}{detail}", " ".repeat(padding)), style)
+        let detail_style = if selected {
+            self.palette.selected()
+        } else {
+            self.palette.muted()
+        };
+        let missing_style = if selected {
+            self.palette.selected()
+        } else {
+            self.palette.base().fg(self.palette.search)
+        };
+
+        let mut spans = vec![
+            Span::styled(format!(" {label}"), label_style),
+            Span::styled(" ".repeat(padding), detail_style),
+            Span::styled(detail, detail_style),
+        ];
+        if missing {
+            spans.push(Span::styled(MISSING, missing_style));
+        }
+        Line::from(spans)
     }
 }
+
+/// Suffix that marks a book whose file is gone.
+const MISSING: &str = "  [missing]";
 
 #[cfg(test)]
 mod tests {
@@ -201,6 +230,12 @@ mod tests {
             .collect()
     }
 
+    fn palette() -> Palette {
+        crate::theme::load("nord", &std::collections::BTreeMap::new())
+            .expect("built-in theme loads")
+            .1
+    }
+
     fn press(library: &mut Library, code: KeyCode) -> LibraryAction {
         library.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -211,7 +246,7 @@ mod tests {
         store.books.push(position("/a.epub", "Oldest", 1));
         store.books.push(position("/b.epub", "Newest", 9));
         store.books.push(position("/c.epub", "Middle", 5));
-        let mut library = Library::new(store);
+        let mut library = Library::new(store, palette());
 
         assert_eq!(library.selected_path(), Some("/b.epub"));
         let text = screen(&mut library);
@@ -236,21 +271,72 @@ mod tests {
         store
             .books
             .push(position("/definitely/missing.epub", "Gone", 1));
-        let mut library = Library::new(store);
+        store.books.push(position("/tmp", "Present", 9));
+        let palette = palette();
+        let mut library = Library::new(store, palette.clone());
 
-        assert!(screen(&mut library).contains("[missing]"));
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| library.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let text: String =
+            buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("[missing]"));
+        let marker = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "[")
+            .expect("missing marker is drawn");
+        assert_eq!(marker.fg, palette.search);
+    }
+
+    #[test]
+    fn uses_theme_colors() {
+        let mut store = Store::default();
+        store.books.push(position("/a.epub", "Only", 1));
+        let palette = palette();
+        let mut library = Library::new(store, palette.clone());
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| library.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_eq!(buffer[(0, 0)].fg, palette.border);
+        assert_eq!(buffer[(0, 0)].bg, palette.background);
+        let title = buffer[(1, 1)].clone();
+        assert_eq!(title.symbol(), " ");
+        let label = buffer[(2, 1)].clone();
+        assert_eq!(label.bg, palette.selection);
+        assert_eq!(label.fg, palette.accent);
     }
 
     #[test]
     fn shows_the_empty_hint_and_ignores_enter() {
-        let mut library = Library::new(Store::default());
+        let palette = palette();
+        let mut library = Library::new(Store::default(), palette.clone());
         assert_eq!(library.selected_path(), None);
         assert_eq!(press(&mut library, KeyCode::Enter), LibraryAction::None);
-        let text = screen(&mut library);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| library.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String =
+            buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("No recent books"));
         assert!(text.contains("Recent books"));
+        assert_eq!(buffer[(2, 1)].fg, palette.muted);
+        let hint = buffer[(1, 18)].clone();
+        assert_eq!(hint.fg, palette.muted);
 
         library.set_message("cannot open");
-        assert!(screen(&mut library).contains("cannot open"));
+        terminal.draw(|frame| library.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String =
+            buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("cannot open"));
+        assert_eq!(buffer[(2, 18)].fg, palette.search);
     }
 }
