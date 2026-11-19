@@ -24,6 +24,26 @@ pub struct BookPosition {
     /// Unix timestamp of the last update.
     #[serde(default)]
     pub updated: u64,
+    /// Named bookmarks inside the book.
+    #[serde(default)]
+    pub bookmarks: Vec<Bookmark>,
+}
+
+/// A named position inside a book.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Bookmark {
+    /// Name shown in the bookmark list.
+    #[serde(default)]
+    pub label: String,
+    /// Index of the chapter.
+    #[serde(default)]
+    pub chapter: usize,
+    /// Scroll fraction inside the chapter, from 0 to 1.
+    #[serde(default)]
+    pub progress: f32,
+    /// Unix timestamp of creation.
+    #[serde(default)]
+    pub created: u64,
 }
 
 /// All saved positions.
@@ -120,6 +140,7 @@ mod tests {
             chapter: 3,
             progress: 0.5,
             updated: 1,
+            ..Default::default()
         });
         store.save(&path).unwrap();
 
@@ -136,6 +157,58 @@ mod tests {
         let path = directory.path().join("state.toml");
         fs::write(&path, "not toml [").unwrap();
         assert!(Store::load(&path).books.is_empty());
+    }
+
+    #[test]
+    fn round_trips_bookmarks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.toml");
+
+        let mut store = Store::default();
+        store.set(BookPosition {
+            path: "/books/a.epub".into(),
+            chapter: 1,
+            progress: 0.25,
+            bookmarks: vec![
+                Bookmark {
+                    label: "one".into(),
+                    chapter: 1,
+                    progress: 0.25,
+                    created: 7,
+                },
+                Bookmark {
+                    label: "two".into(),
+                    chapter: 2,
+                    progress: 0.75,
+                    created: 8,
+                },
+            ],
+            ..Default::default()
+        });
+        store.save(&path).unwrap();
+
+        let loaded = Store::load(&path);
+        let position = loaded.get("/books/a.epub").unwrap();
+        assert_eq!(position.bookmarks.len(), 2);
+        assert_eq!(position.bookmarks[0].label, "one");
+        assert_eq!(position.bookmarks[1].chapter, 2);
+        assert_eq!(position.bookmarks[1].created, 8);
+    }
+
+    #[test]
+    fn position_without_bookmarks_loads_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.toml");
+        fs::write(
+            &path,
+            "[[books]]\npath = \"/a.epub\"\ntitle = \"A\"\nchapter = 2\nprogress = 0.5\nupdated = 1\n",
+        )
+        .unwrap();
+
+        let loaded = Store::load(&path);
+        let position = loaded.get("/a.epub").unwrap();
+        assert_eq!(position.chapter, 2);
+        assert!(position.bookmarks.is_empty());
     }
 
     #[test]

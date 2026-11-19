@@ -23,7 +23,7 @@ use ratatui_image::{Image, Resize};
 use crate::book::{Book, LinkTarget};
 use crate::config::Config;
 use crate::layout::{self, Options, View};
-use crate::state::{self, BookPosition, Store};
+use crate::state::{self, BookPosition, Bookmark, Store};
 use crate::theme::{self, Palette};
 
 /// Maximum number of search hits kept in memory.
@@ -38,6 +38,8 @@ pub enum Mode {
     Toc,
     Help,
     Theme,
+    Bookmarks,
+    BookmarkLabel,
 }
 
 /// One search result.
@@ -76,6 +78,10 @@ pub struct App {
     search_before: Option<Search>,
     selected_link: Option<usize>,
     link_history: Vec<(usize, usize)>,
+    bookmarks: Vec<Bookmark>,
+    bookmark_input: String,
+    bookmark_selected: usize,
+    bookmark_offset: usize,
     toc_selected: usize,
     toc_offset: usize,
     toc_matches: Vec<usize>,
@@ -140,6 +146,10 @@ impl App {
             .into_owned();
         let store = Store::load(&state_path);
         let saved = store.get(&book_key).cloned();
+        let bookmarks = saved
+            .as_ref()
+            .map(|position| position.bookmarks.clone())
+            .unwrap_or_default();
 
         let chapter = saved
             .as_ref()
@@ -170,6 +180,10 @@ impl App {
             search_before: None,
             selected_link: None,
             link_history: Vec::new(),
+            bookmarks,
+            bookmark_input: String::new(),
+            bookmark_selected: 0,
+            bookmark_offset: 0,
             toc_selected: 0,
             toc_offset: 0,
             toc_matches: Vec::new(),
@@ -243,6 +257,7 @@ impl App {
             chapter: self.chapter,
             progress,
             updated: state::now(),
+            bookmarks: self.bookmarks.clone(),
         });
         self.state.save(&self.state_path)
     }
@@ -276,6 +291,8 @@ impl App {
             Mode::Percent => self.key_percent(key),
             Mode::Toc => self.key_toc(key),
             Mode::Theme => self.key_theme(key),
+            Mode::Bookmarks => self.key_bookmarks(key),
+            Mode::BookmarkLabel => self.key_bookmark_label(key),
             Mode::Help => {
                 if matches!(
                     key.code,
@@ -320,12 +337,16 @@ impl App {
             Mode::Toc => self.draw_toc(frame, area),
             Mode::Help => self.draw_help(frame, area),
             Mode::Theme => self.draw_theme_selector(frame, area),
+            Mode::Bookmarks => self.draw_bookmarks(frame, area),
             _ => {}
         }
 
         let prompt = match self.mode {
             Mode::Search => Some(format!("/ {}", self.input)),
             Mode::Percent => Some(format!("goto {}", self.input)),
+            Mode::BookmarkLabel => {
+                Some(format!("bookmark: {}", self.bookmark_input))
+            }
             _ => None,
         };
         if let Some(prompt) = prompt {
@@ -400,6 +421,19 @@ impl App {
                     .min(self.toc_matches.len().saturating_sub(1));
                 self.toc_offset = 0;
                 self.mode = Mode::Toc;
+            }
+            KeyCode::Char('m') => {
+                self.bookmark_input.clear();
+                self.mode = Mode::BookmarkLabel;
+            }
+            KeyCode::Char('\'') => {
+                self.bookmark_selected = self
+                    .bookmarks
+                    .iter()
+                    .rposition(|bookmark| bookmark.chapter <= self.chapter)
+                    .unwrap_or(0);
+                self.bookmark_offset = 0;
+                self.mode = Mode::Bookmarks;
             }
             KeyCode::Char('%') => {
                 self.input.clear();
@@ -1152,6 +1186,100 @@ impl App {
         }
     }
 
+    fn key_bookmark_label(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.bookmark_input.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                let mut label = self.bookmark_input.trim().to_string();
+                if label.is_empty() {
+                    label = format!(
+                        "{} {}%",
+                        self.book.chapters[self.chapter].title,
+                        self.book_percent()
+                    );
+                }
+                let progress = if self.view.total_rows > 0 {
+                    (self.scroll as f32 / self.view.total_rows as f32)
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                self.bookmarks.push(Bookmark {
+                    label: label.clone(),
+                    chapter: self.chapter,
+                    progress,
+                    created: state::now(),
+                });
+                self.bookmark_input.clear();
+                self.mode = Mode::Normal;
+                let _ = self.save_position();
+                self.message = Some(format!("bookmark added: {label}"));
+            }
+            KeyCode::Backspace => {
+                self.bookmark_input.pop();
+            }
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.bookmark_input.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn key_bookmarks(&mut self, key: KeyEvent) {
+        let last = self.bookmarks.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.bookmark_selected = self.bookmark_selected.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.bookmark_selected = (self.bookmark_selected + 1).min(last)
+            }
+            KeyCode::PageUp => {
+                self.bookmark_selected =
+                    self.bookmark_selected.saturating_sub(10)
+            }
+            KeyCode::PageDown => {
+                self.bookmark_selected = (self.bookmark_selected + 10).min(last)
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.bookmark_selected = 0,
+            KeyCode::End | KeyCode::Char('G') => self.bookmark_selected = last,
+            KeyCode::Enter => {
+                let Some(bookmark) =
+                    self.bookmarks.get(self.bookmark_selected).cloned()
+                else {
+                    return;
+                };
+                self.chapter =
+                    bookmark.chapter.min(self.book.chapters.len() - 1);
+                self.selected_link = None;
+                self.rebuild_view();
+                let row = (bookmark.progress * self.view.total_rows as f32)
+                    .round() as usize;
+                self.scroll = row.min(self.scroll_limit());
+                self.mode = Mode::Normal;
+                let _ = self.save_position();
+            }
+            KeyCode::Char('x') | KeyCode::Delete
+                if self.bookmark_selected < self.bookmarks.len() =>
+            {
+                self.bookmarks.remove(self.bookmark_selected);
+                self.bookmark_selected = self
+                    .bookmark_selected
+                    .min(self.bookmarks.len().saturating_sub(1));
+                let _ = self.save_position();
+                self.message = Some("bookmark deleted".to_string());
+            }
+            _ => {}
+        }
+    }
+
     fn adjust_width(&mut self, delta: i32) {
         let max = self.content_width_limit();
         let width = (i32::from(self.config.text_width) + delta)
@@ -1306,6 +1434,16 @@ impl App {
             Mode::Percent => {
                 let line = bar_line(
                     &format!("goto {}%", self.input),
+                    "",
+                    area.width,
+                    self.palette.status(),
+                );
+                frame.render_widget(Paragraph::new(line), area);
+                return;
+            }
+            Mode::BookmarkLabel => {
+                let line = bar_line(
+                    &format!("bookmark: {}", self.bookmark_input),
                     "",
                     area.width,
                     self.palette.status(),
@@ -1697,6 +1835,84 @@ impl App {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 " enter apply   esc cancel   up/down select ",
+                self.palette.muted(),
+            )),
+            hint_area,
+        );
+    }
+
+    fn draw_bookmarks(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width < 12 || area.height < 5 {
+            return;
+        }
+        let width = 72.min(area.width.saturating_sub(4)).max(20);
+        let height = (self.bookmarks.len() as u16 + 2)
+            .clamp(5, area.height.saturating_sub(2).max(5));
+        let rect = centered(area, width, height);
+        frame.render_widget(Clear, rect);
+
+        let block = Block::bordered()
+            .title(" Bookmarks ")
+            .border_style(self.palette.border_style())
+            .style(self.palette.base());
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+
+        let [list_area, hint_area] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+
+        let rows = usize::from(list_area.height);
+        if self.bookmark_selected < self.bookmark_offset {
+            self.bookmark_offset = self.bookmark_selected;
+        } else if rows > 0
+            && self.bookmark_selected >= self.bookmark_offset + rows
+        {
+            self.bookmark_offset = self.bookmark_selected + 1 - rows;
+        }
+
+        let mut lines = Vec::new();
+        if self.bookmarks.is_empty() {
+            lines.push(Line::styled(" no bookmarks", self.palette.muted()));
+        } else {
+            let chapter_count = self.book.chapters.len();
+            for index in
+                self.bookmark_offset..self.bookmark_offset.saturating_add(rows)
+            {
+                let Some(bookmark) = self.bookmarks.get(index) else {
+                    break;
+                };
+                let style = if index == self.bookmark_selected {
+                    self.palette.selected()
+                } else {
+                    self.palette.base()
+                };
+                let title = self
+                    .book
+                    .chapters
+                    .get(bookmark.chapter)
+                    .map(|chapter| chapter.title.as_str())
+                    .unwrap_or_default();
+                let percent =
+                    (bookmark.progress * 100.0).round().clamp(0.0, 100.0);
+                lines.push(Line::styled(
+                    format!(
+                        " {}  {}/{} {title}  {percent}%",
+                        bookmark.label,
+                        bookmark.chapter + 1,
+                        chapter_count
+                    ),
+                    style,
+                ));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), list_area);
+
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " enter jump   x delete   esc close ",
                 self.palette.muted(),
             )),
             hint_area,
@@ -2191,6 +2407,57 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(screen(&mut app).contains("link target not found"));
         assert_eq!(app.chapter(), 0);
+    }
+
+    #[test]
+    fn adds_jumps_and_persists_bookmarks() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, state_path, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('d'));
+        let chapter = app.chapter();
+        let scroll = app.scroll();
+        assert!(scroll > 0);
+
+        press(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.mode(), Mode::BookmarkLabel);
+        assert!(screen(&mut app).contains("bookmark: "));
+        type_text(&mut app, "note");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.bookmarks.len(), 1);
+        assert!(screen(&mut app).contains("bookmark added: note"));
+
+        press(&mut app, KeyCode::Char('h'));
+        assert_ne!(app.chapter(), chapter);
+
+        press(&mut app, KeyCode::Char('\''));
+        assert_eq!(app.mode(), Mode::Bookmarks);
+        assert!(screen(&mut app).contains("note"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.chapter(), chapter);
+        assert_eq!(app.scroll(), scroll);
+        drop(app);
+
+        let mut reopened = App::new(
+            &fixture.path,
+            Config::default(),
+            Picker::halfblocks(),
+            state_path,
+        )
+        .unwrap();
+        screen(&mut reopened);
+        assert_eq!(reopened.bookmarks.len(), 1);
+        press(&mut reopened, KeyCode::Char('\''));
+        assert!(screen(&mut reopened).contains("note"));
+        press(&mut reopened, KeyCode::Char('x'));
+        assert!(screen(&mut reopened).contains("bookmark deleted"));
+        assert!(reopened.bookmarks.is_empty());
+        assert!(screen(&mut reopened).contains("no bookmarks"));
     }
 
     #[test]
