@@ -685,6 +685,8 @@ fn chars_to_line(chars: Vec<StyledChar>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::html::{Inline, InlineFlags};
 

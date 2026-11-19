@@ -11,6 +11,8 @@ pub struct InlineFlags {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    /// Set when the run is part of a link.
+    pub link: bool,
 }
 
 /// A run of text with uniform inline flags.
@@ -81,6 +83,17 @@ pub struct ParsedHtml {
     pub headings: Vec<String>,
     /// Element ids and the block index they point at.
     pub anchors: Vec<(String, usize)>,
+    /// Links in document order.
+    pub links: Vec<Link>,
+}
+
+/// A link found in a document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub href: String,
+    pub label: String,
+    /// Index of the block that contains the link text.
+    pub block: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,6 +132,11 @@ struct Parser {
     markers: Vec<String>,
     anchors: Vec<(String, usize)>,
     pending_space: bool,
+    link_depth: usize,
+    link_href: Option<String>,
+    link_label: String,
+    link_block: usize,
+    links: Vec<Link>,
 }
 
 impl Parser {
@@ -218,6 +236,20 @@ impl Parser {
                     });
                 }
             }
+            "a" => {
+                if self.link_depth == 0 {
+                    if let Some(href) =
+                        attrs.get("href").filter(|href| !href.is_empty())
+                    {
+                        self.link_href = Some(href.clone());
+                        self.link_label.clear();
+                        self.link_block = self.blocks.len();
+                        self.link_depth = 1;
+                    }
+                } else {
+                    self.link_depth += 1;
+                }
+            }
             "b" | "strong" => self.bold += 1,
             "i" | "em" => self.italic += 1,
             "code" | "tt" | "kbd" | "samp" => self.code += 1,
@@ -270,6 +302,7 @@ impl Parser {
                     BlockKind::ListItem
                 };
             }
+            "a" => self.finish_link(),
             "b" | "strong" => self.bold = self.bold.saturating_sub(1),
             "i" | "em" => self.italic = self.italic.saturating_sub(1),
             "code" | "tt" | "kbd" | "samp" => {
@@ -313,8 +346,30 @@ impl Parser {
         }
         self.pending_space = previous_space;
         if !out.is_empty() {
+            if self.link_depth > 0 {
+                self.link_label.push_str(&out);
+            }
             self.push_text(&out);
         }
+    }
+
+    /// Close the innermost open link.
+    fn finish_link(&mut self) {
+        if self.link_depth == 0 {
+            return;
+        }
+        self.link_depth -= 1;
+        if self.link_depth != 0 {
+            return;
+        }
+        if let Some(href) = self.link_href.take() {
+            self.links.push(Link {
+                href,
+                label: collapse_whitespace(&self.link_label),
+                block: self.link_block,
+            });
+        }
+        self.link_label.clear();
     }
 
     fn reference(&mut self, reference: &str) {
@@ -342,6 +397,7 @@ impl Parser {
             bold: self.bold > 0,
             italic: self.italic > 0,
             code: self.code > 0,
+            link: self.link_depth > 0,
         };
         if let Some(last) = self.current.last_mut() {
             if last.flags == flags {
@@ -389,6 +445,7 @@ impl Parser {
 
     fn finish(mut self) -> ParsedHtml {
         self.flush();
+        self.finish_link();
         let title = if self.title.is_empty() {
             None
         } else {
@@ -399,6 +456,7 @@ impl Parser {
             blocks: self.blocks,
             headings: self.headings,
             anchors: self.anchors,
+            links: self.links,
         }
     }
 }

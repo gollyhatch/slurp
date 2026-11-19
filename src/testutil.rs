@@ -81,6 +81,7 @@ pub fn sample_book() -> TestBook {
       <li>epsilon item</li>
     </ul>
     <blockquote>A quoted line about curious things.</blockquote>
+    <p>See <a href="ch2.xhtml">the second chapter</a> for more.</p>
     <p>First line<br/>second line</p>
     <h2 id="part-two">Part Two</h2>
     <p>The second part starts here.</p>

@@ -20,7 +20,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 
-use crate::book::Book;
+use crate::book::{Book, LinkTarget};
 use crate::config::Config;
 use crate::layout::{self, Options, View};
 use crate::state::{self, BookPosition, Store};
@@ -74,6 +74,8 @@ pub struct App {
     input: String,
     search: Option<Search>,
     search_before: Option<Search>,
+    selected_link: Option<usize>,
+    link_history: Vec<(usize, usize)>,
     toc_selected: usize,
     toc_offset: usize,
     toc_matches: Vec<usize>,
@@ -166,6 +168,8 @@ impl App {
             input: String::new(),
             search: None,
             search_before: None,
+            selected_link: None,
+            link_history: Vec::new(),
             toc_selected: 0,
             toc_offset: 0,
             toc_matches: Vec::new(),
@@ -336,6 +340,13 @@ impl App {
     }
 
     fn key_normal(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+        {
+            self.go_back_link();
+            return;
+        }
+
         let half = (self.viewport_rows / 2).max(1) as i64;
         let page = self.viewport_rows.max(1) as i64;
 
@@ -344,6 +355,8 @@ impl App {
                 self.quit = true;
                 let _ = self.save_position();
             }
+            KeyCode::Tab => self.select_next_link(),
+            KeyCode::Enter => self.follow_selected_link(),
             KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
             KeyCode::Char('d') => self.scroll_by(half),
@@ -422,6 +435,7 @@ impl App {
             KeyCode::Char('-') | KeyCode::Char('_') => self.adjust_width(-4),
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Esc => {
+                self.selected_link = None;
                 self.search = None;
                 self.rebuild_view();
             }
@@ -508,6 +522,7 @@ impl App {
             accumulated = end;
         }
 
+        self.selected_link = None;
         self.chapter = chapter;
         self.scroll = 0;
         self.rebuild_view();
@@ -536,6 +551,86 @@ impl App {
         };
         let inside = (local * chars as f32).round() as usize;
         (((before + inside) * 100) / self.total_chars).min(100) as u8
+    }
+
+    /// Move the link selection to the next link of the chapter.
+    fn select_next_link(&mut self) {
+        let Some(chapter) = self.book.chapters.get(self.chapter) else {
+            return;
+        };
+        let count = chapter.links.len();
+        if count == 0 {
+            self.message = Some("no links in this chapter".to_string());
+            return;
+        }
+        let next = self
+            .selected_link
+            .map(|index| (index + 1) % count)
+            .unwrap_or(0);
+        let link = &chapter.links[next];
+        let block = link.block;
+        let label = if link.label.is_empty() {
+            link.href.clone()
+        } else {
+            link.label.clone()
+        };
+
+        self.selected_link = Some(next);
+        if let Some(item) = self.view.block_first_item.get(block).copied() {
+            self.scroll = self.view.tops[item].min(self.scroll_limit());
+        }
+        self.message = Some(format!("link {}/{}: {label}", next + 1, count));
+    }
+
+    /// Open the selected link.
+    fn follow_selected_link(&mut self) {
+        let Some(link) = self
+            .selected_link
+            .and_then(|index| self.book.chapters[self.chapter].links.get(index))
+            .cloned()
+        else {
+            return;
+        };
+
+        match self.book.resolve_link(self.chapter, &link.href) {
+            LinkTarget::Chapter { chapter, block } => {
+                self.link_history.push((self.chapter, self.scroll));
+                if self.link_history.len() > 64 {
+                    self.link_history.remove(0);
+                }
+                self.chapter = chapter.min(self.book.chapters.len() - 1);
+                self.selected_link = None;
+                self.rebuild_view();
+                if let Some(block) = block {
+                    if let Some(item) =
+                        self.view.block_first_item.get(block).copied()
+                    {
+                        self.scroll =
+                            self.view.tops[item].min(self.scroll_limit());
+                    }
+                }
+            }
+            LinkTarget::External => {
+                self.message = Some(format!("external link: {}", link.href));
+            }
+            LinkTarget::Missing => {
+                self.message =
+                    Some(format!("link target not found: {}", link.href));
+            }
+        }
+    }
+
+    /// Return to the position before the last followed link.
+    fn go_back_link(&mut self) {
+        let Some((chapter, scroll)) = self.link_history.pop() else {
+            self.message = Some("no link history".to_string());
+            return;
+        };
+        self.chapter = chapter.min(self.book.chapters.len() - 1);
+        self.selected_link = None;
+        self.rebuild_view();
+        self.scroll = scroll.min(self.scroll_limit());
+        let _ = self.save_position();
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
@@ -610,6 +705,7 @@ impl App {
         if index == self.chapter {
             return;
         }
+        self.selected_link = None;
         self.chapter = index;
         self.scroll = 0;
         self.rebuild_view();
@@ -911,6 +1007,7 @@ impl App {
         let query = search.query.clone();
 
         if hit.chapter != self.chapter {
+            self.selected_link = None;
             self.chapter = hit.chapter;
             self.scroll = 0;
             self.rebuild_view();
@@ -1187,6 +1284,7 @@ impl App {
         if index == self.chapter || index >= self.book.chapters.len() {
             return;
         }
+        self.selected_link = None;
         self.chapter = index;
         self.view = self.build_view(index);
         self.view_cache.clear();
@@ -2045,6 +2143,54 @@ mod tests {
 
         press(&mut app, KeyCode::Char(' '));
         assert!(app.scroll() > second);
+    }
+
+    #[test]
+    fn follows_and_returns_from_links() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        assert_eq!(app.chapter(), 0);
+        assert!(!app.book.chapters[0].links.is_empty());
+
+        press(&mut app, KeyCode::Tab);
+        assert!(screen(&mut app).contains("link 1/1"));
+        let at_link = app.scroll();
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.chapter(), 2);
+
+        press_ctrl(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.chapter(), 0);
+        assert_eq!(app.scroll(), at_link);
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn reports_missing_and_external_links() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        app.book.chapters[0].links.push(crate::html::Link {
+            href: "https://example.com".into(),
+            label: "web".into(),
+            block: 0,
+        });
+        app.book.chapters[0].links.push(crate::html::Link {
+            href: "gone.xhtml".into(),
+            label: "gone".into(),
+            block: 0,
+        });
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app).contains("external link"));
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(screen(&mut app).contains("link target not found"));
+        assert_eq!(app.chapter(), 0);
     }
 
     #[test]

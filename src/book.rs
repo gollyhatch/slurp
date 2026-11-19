@@ -137,11 +137,30 @@ impl Book {
 
                 let plain =
                     section.blocks.iter().map(Block::plain_text).collect();
+                let start = section.start_block;
+                let end = start + section.blocks.len();
+                let anchors = parsed
+                    .anchors
+                    .iter()
+                    .filter(|(_, block)| (start..end).contains(block))
+                    .map(|(id, block)| (id.clone(), block - start))
+                    .collect();
+                let links = parsed
+                    .links
+                    .iter()
+                    .filter(|link| (start..end).contains(&link.block))
+                    .map(|link| html::Link {
+                        block: link.block - start,
+                        ..link.clone()
+                    })
+                    .collect();
                 chapters.push(Chapter {
                     href: href.clone(),
                     title: collapse_spaces(&title),
                     blocks: section.blocks,
                     plain,
+                    anchors,
+                    links,
                 });
             }
         }
@@ -152,6 +171,8 @@ impl Book {
                 title: "Empty book".to_string(),
                 blocks: Vec::new(),
                 plain: Vec::new(),
+                anchors: HashMap::new(),
+                links: Vec::new(),
             });
         }
 
@@ -198,28 +219,73 @@ impl Book {
             return None;
         }
         let src = src.split('#').next().unwrap_or(src);
-        let src = percent_decode_str(src).decode_utf8_lossy();
-        let base = percent_decode_str(chapter_href).decode_utf8_lossy();
+        resolve_relative(chapter_href, src)
+    }
 
-        let mut parts: Vec<&str> = base
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|part| !part.is_empty())
+    /// Resolve a link inside a chapter.
+    pub fn resolve_link(&self, from_chapter: usize, href: &str) -> LinkTarget {
+        let href = href.trim();
+        if href.is_empty() {
+            return LinkTarget::Missing;
+        }
+        if href.contains("://")
+            || href.starts_with("mailto:")
+            || href.starts_with("tel:")
+            || href.starts_with("file:")
+        {
+            return LinkTarget::External;
+        }
+
+        let (path, fragment) = match href.split_once('#') {
+            Some((path, fragment)) => (
+                path,
+                (!fragment.is_empty()).then(|| {
+                    percent_decode_str(fragment)
+                        .decode_utf8_lossy()
+                        .into_owned()
+                }),
+            ),
+            None => (href, None),
+        };
+        let path = path.split('?').next().unwrap_or(path);
+
+        let Some(current) = self.chapters.get(from_chapter) else {
+            return LinkTarget::Missing;
+        };
+        let key = if path.is_empty() {
+            normalize_path(&current.href)
+        } else {
+            match resolve_relative(&current.href, path) {
+                Some(key) => key,
+                None => return LinkTarget::Missing,
+            }
+        };
+
+        let candidates: Vec<usize> = self
+            .chapters
+            .iter()
+            .enumerate()
+            .filter(|(_, chapter)| normalize_path(&chapter.href) == key)
+            .map(|(index, _)| index)
             .collect();
-        parts.pop();
-
-        let mut resolved: Vec<String> =
-            parts.iter().map(|part| (*part).to_string()).collect();
-        for segment in src.split('/') {
-            match segment {
-                "" | "." => {}
-                ".." => {
-                    resolved.pop();
+        let Some(&first) = candidates.first() else {
+            return LinkTarget::Missing;
+        };
+        if let Some(fragment) = fragment {
+            for &chapter in &candidates {
+                if let Some(block) = self.chapters[chapter].anchors.get(&fragment)
+                {
+                    return LinkTarget::Chapter {
+                        chapter,
+                        block: Some(*block),
+                    };
                 }
-                other => resolved.push(other.to_string()),
             }
         }
-        Some(resolved.join("/"))
+        LinkTarget::Chapter {
+            chapter: first,
+            block: None,
+        }
     }
 
     /// Read the bytes of an image by its resolved manifest key.
