@@ -1200,9 +1200,7 @@ impl App {
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
         let left = format!(" {}", self.book.title);
         let left = truncate(&left, usize::from(area.width));
-        let right = format!("{} ", self.config.theme);
-        let right = truncate(&right, usize::from(area.width));
-        let line = bar_line(&left, &right, area.width, self.palette.status());
+        let line = bar_line(&left, "", area.width, self.palette.status());
         frame.render_widget(Paragraph::new(line), area);
     }
 
@@ -2063,7 +2061,13 @@ mod tests {
 
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.theme_name(), "tokyo-night-moon");
-        assert!(screen(&mut app).contains("tokyo-night-moon"));
+    }
+
+    #[test]
+    fn header_does_not_show_the_theme_name() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        assert!(!screen(&mut app).contains("silkcircuit-neon"));
     }
 
     #[test]
