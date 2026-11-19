@@ -305,16 +305,12 @@ impl App {
             return;
         }
 
-        let [header_area, body_area, footer_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [body_area, status_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .areas(area);
 
-        self.draw_header(frame, header_area);
         self.draw_body(frame, body_area);
-        self.draw_footer(frame, footer_area);
+        self.draw_footer(frame, status_area);
 
         match self.mode {
             Mode::Toc => self.draw_toc(frame, area),
@@ -329,12 +325,12 @@ impl App {
             _ => None,
         };
         if let Some(prompt) = prompt {
-            let x = footer_area
+            let x = status_area
                 .x
                 .saturating_add(1)
                 .saturating_add(layout::display_width(&prompt) as u16);
-            if x < footer_area.right() {
-                frame.set_cursor_position(Position::new(x, footer_area.y));
+            if x < status_area.right() {
+                frame.set_cursor_position(Position::new(x, status_area.y));
             }
         }
     }
@@ -1094,7 +1090,7 @@ impl App {
             return;
         }
         let content = self.content_width_for(area);
-        let viewport = area.height.saturating_sub(2).max(1);
+        let viewport = area.height.saturating_sub(1).max(1);
         if !self.laid_out
             || content != self.content_width
             || viewport != self.viewport_rows
@@ -1197,13 +1193,6 @@ impl App {
         self.scroll = 0;
     }
 
-    fn draw_header(&self, frame: &mut Frame, area: Rect) {
-        let left = format!(" {}", self.book.title);
-        let left = truncate(&left, usize::from(area.width));
-        let line = bar_line(&left, "", area.width, self.palette.status());
-        frame.render_widget(Paragraph::new(line), area);
-    }
-
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         match self.mode {
             Mode::Search => {
@@ -1230,14 +1219,26 @@ impl App {
         }
 
         let progress = self.book_percent();
+        let auto = if self.auto_scroll {
+            format!("auto {}wpm  ", self.auto_scroll_wpm)
+        } else {
+            String::new()
+        };
+        let right = format!(
+            "{auto}{}/{}  {progress}%  ? help ",
+            self.chapter + 1,
+            self.book.chapters.len()
+        );
+        let width = usize::from(area.width);
+        let left_limit = width
+            .saturating_sub(layout::display_width(&right).saturating_add(1));
         let mut left = if let Some(message) = &self.message {
             format!(" {message}")
         } else {
-            format!(
-                " {}/{} {}",
-                self.chapter + 1,
-                self.book.chapters.len(),
-                self.book.chapters[self.chapter].title
+            title_line(
+                &self.book.title,
+                self.book.author.as_deref(),
+                left_limit,
             )
         };
         if let Some(search) = &self.search {
@@ -1253,12 +1254,6 @@ impl App {
         if self.config.continuous {
             left.push_str("  [continuous]");
         }
-        let auto = if self.auto_scroll {
-            format!("auto {}wpm  ", self.auto_scroll_wpm)
-        } else {
-            String::new()
-        };
-        let right = format!("{auto}{progress}%  ? help ");
         let line = bar_line(&left, &right, area.width, self.palette.status());
         frame.render_widget(Paragraph::new(line), area);
     }
@@ -1665,6 +1660,26 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
+/// Format the book title and author within a width, keeping the author when
+/// the title does not fit.
+fn title_line(title: &str, author: Option<&str>, limit: usize) -> String {
+    match author {
+        None => {
+            let title = truncate(title, limit.saturating_sub(1));
+            format!(" {title}")
+        }
+        Some(author) => {
+            let suffix = format!(" \u{2014} {author}");
+            let suffix_width = layout::display_width(&suffix);
+            if limit <= suffix_width {
+                return truncate(&suffix, limit);
+            }
+            let title = truncate(title, limit - suffix_width - 1);
+            format!(" {title}{suffix}")
+        }
+    }
+}
+
 fn bar_line(
     left: &str,
     right: &str,
@@ -1672,9 +1687,11 @@ fn bar_line(
     style: Style,
 ) -> Line<'static> {
     let width = usize::from(width);
-    let left = truncate(left, width);
     let right = truncate(right, width);
-    let used = layout::display_width(&left) + layout::display_width(&right);
+    let right_width = layout::display_width(&right);
+    let left_limit = width.saturating_sub(right_width.saturating_add(1));
+    let left = truncate(left, left_limit);
+    let used = layout::display_width(&left) + right_width;
     let padding = width.saturating_sub(used).max(1);
     Line::from(vec![Span::styled(
         format!("{left}{}{right}", " ".repeat(padding)),
@@ -2064,10 +2081,26 @@ mod tests {
     }
 
     #[test]
-    fn header_does_not_show_the_theme_name() {
+    fn title_line_keeps_the_author() {
+        let line = title_line(
+            "A very long book title that will not fit on one line",
+            Some("Author Name"),
+            30,
+        );
+        assert!(line.contains("Author Name"));
+        assert!(layout::display_width(&line) <= 30);
+        assert!(title_line("Short", Some("Author"), 40).contains("Author"));
+        assert!(title_line("Short", None, 40).contains("Short"));
+    }
+
+    #[test]
+    fn status_line_shows_title_and_author() {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);
-        assert!(!screen(&mut app).contains("silkcircuit-neon"));
+        let text = screen(&mut app);
+        assert!(text.contains("Test Book"));
+        assert!(text.contains("Test Author"));
+        assert!(!text.contains("silkcircuit-neon"));
     }
 
     #[test]
