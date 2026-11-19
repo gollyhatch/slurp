@@ -1128,6 +1128,13 @@ impl App {
                 .image_max_height
                 .min(self.viewport_rows.saturating_sub(2).max(2)),
             images: self.images,
+            trailing_blank_rows: if self.config.continuous
+                && index + 1 < self.book.chapters.len()
+            {
+                2
+            } else {
+                0
+            },
             query: self.search.as_ref().map(|search| search.query.clone()),
         };
 
@@ -1862,6 +1869,24 @@ mod tests {
         app.advance_auto_scroll(Duration::from_secs(60));
 
         assert!(app.chapter() > 0);
+    }
+
+    #[test]
+    fn continuous_mode_adds_two_blank_rows_between_chapters() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        let before = app.view().total_rows;
+
+        press(&mut app, KeyCode::Char('c'));
+
+        assert_eq!(app.view().total_rows, before + 2);
+        let tail: Vec<_> = app.view().items.iter().rev().take(2).collect();
+        for item in tail {
+            assert!(
+                matches!(item, layout::Item::Line { plain, .. } if plain.is_empty())
+            );
+        }
     }
 
     #[test]

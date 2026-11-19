@@ -18,7 +18,7 @@ slurp book.epub
 - Auto-scroll at a configurable speed in words per minute. It stops at
   popups and moves to the next chapter when the screen ends.
 - Optional continuous mode that scrolls through all chapters as one stream,
-  with no chapter switch needed.
+  with no chapter switch needed. Two blank rows separate chapters.
 - The `t` popup uses the EPUB table of contents with fuzzy filtering. If the
   book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.

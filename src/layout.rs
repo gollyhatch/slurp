@@ -25,6 +25,8 @@ pub struct Options {
     pub image_max_rows: u16,
     /// Set to `false` to render images as text placeholders.
     pub images: bool,
+    /// Empty rows appended after the last block, used to separate chapters.
+    pub trailing_blank_rows: u16,
     pub query: Option<String>,
 }
 
@@ -380,6 +382,17 @@ pub fn build(
             paragraph_starts.push(start_index);
         }
         last_was_list = is_list;
+    }
+
+    if options.trailing_blank_rows > 0 && !items.is_empty() {
+        let block = chapter.blocks.len().saturating_sub(1);
+        for _ in 0..options.trailing_blank_rows {
+            items.push(Item::Line {
+                line: Line::default(),
+                plain: String::new(),
+                block,
+            });
+        }
     }
 
     let mut tops = Vec::with_capacity(items.len() + 1);
@@ -779,6 +792,7 @@ mod tests {
             paragraph_spacing: 1,
             image_max_rows: 10,
             images: true,
+            trailing_blank_rows: 0,
             query: None,
         };
         let picker = Picker::halfblocks();
@@ -830,6 +844,52 @@ mod tests {
     }
 
     #[test]
+    fn appends_trailing_blank_rows() {
+        let chapter = Chapter {
+            href: "ch1.xhtml".into(),
+            title: "One".into(),
+            blocks: vec![Block::Paragraph(vec![Inline {
+                text: "one".into(),
+                flags: InlineFlags::default(),
+            }])],
+            plain: vec!["one".into()],
+        };
+        let palette = crate::theme::Palette {
+            text: ratatui::style::Color::White,
+            background: ratatui::style::Color::Black,
+            heading: ratatui::style::Color::Yellow,
+            accent: ratatui::style::Color::Cyan,
+            muted: ratatui::style::Color::Gray,
+            search: ratatui::style::Color::Red,
+            search_text: ratatui::style::Color::Black,
+            status_bg: ratatui::style::Color::Blue,
+            status_fg: ratatui::style::Color::White,
+            border: ratatui::style::Color::Gray,
+            selection: ratatui::style::Color::DarkGray,
+        };
+        let options = Options {
+            width: 40,
+            paragraph_spacing: 1,
+            image_max_rows: 10,
+            images: true,
+            trailing_blank_rows: 2,
+            query: None,
+        };
+        let view =
+            build(&chapter, &palette, &options, &Picker::halfblocks(), |_| {
+                None
+            });
+        assert_eq!(view.total_rows, 3);
+        let blanks = view.items.iter().rev().take(2);
+        for item in blanks {
+            match item {
+                Item::Line { plain, .. } => assert!(plain.is_empty()),
+                Item::Image { .. } => panic!("expected blank lines"),
+            }
+        }
+    }
+
+    #[test]
     fn skips_soft_line_breaks_in_paragraph_navigation() {
         let chapter = Chapter {
             href: "ch1.xhtml".into(),
@@ -868,6 +928,7 @@ mod tests {
             paragraph_spacing: 1,
             image_max_rows: 10,
             images: true,
+            trailing_blank_rows: 0,
             query: None,
         };
         let view =
@@ -909,6 +970,7 @@ mod tests {
             paragraph_spacing: 1,
             image_max_rows: 10,
             images: true,
+            trailing_blank_rows: 0,
             query: None,
         };
         let picker = Picker::halfblocks();
@@ -962,6 +1024,7 @@ mod tests {
             paragraph_spacing: 1,
             image_max_rows: 10,
             images: false,
+            trailing_blank_rows: 0,
             query: None,
         };
         let view =
