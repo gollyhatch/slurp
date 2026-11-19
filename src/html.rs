@@ -673,6 +673,59 @@ mod tests {
     }
 
     #[test]
+    fn records_links() {
+        let html = r#"<html><body>
+            <h1>One</h1>
+            <p>See <a href="ch2.xhtml#note">note 1</a>.</p>
+        </body></html>"#;
+        let parsed = parse(html);
+        assert_eq!(parsed.links.len(), 1);
+        let link = &parsed.links[0];
+        assert_eq!(link.href, "ch2.xhtml#note");
+        assert_eq!(link.label, "note 1");
+        assert_eq!(link.block, 1);
+
+        let Some(Block::Paragraph(content)) = parsed.blocks.get(1) else {
+            panic!("expected paragraph");
+        };
+        let run = content
+            .iter()
+            .find(|inline| inline.text == "note 1")
+            .expect("link text run");
+        assert!(run.flags.link);
+        assert!(content
+            .iter()
+            .find(|inline| inline.text.contains("See"))
+            .is_some_and(|inline| !inline.flags.link));
+    }
+
+    #[test]
+    fn ignores_links_without_href() {
+        let html = r#"<html><body>
+            <p>plain <a name="spot">text</a></p>
+        </body></html>"#;
+        let parsed = parse(html);
+        assert!(parsed.links.is_empty());
+        let Some(Block::Paragraph(content)) = parsed.blocks.first() else {
+            panic!("expected paragraph");
+        };
+        assert!(content.iter().all(|inline| !inline.flags.link));
+    }
+
+    #[test]
+    fn records_links_without_text() {
+        let html = r#"<html><body>
+            <p>a</p>
+            <a href="ch2.xhtml"/>
+            <p>b</p>
+        </body></html>"#;
+        let parsed = parse(html);
+        assert_eq!(parsed.links.len(), 1);
+        assert_eq!(parsed.links[0].href, "ch2.xhtml");
+        assert_eq!(parsed.links[0].label, "");
+    }
+
+    #[test]
     fn handles_svg_image() {
         let html = r#"<html><body><svg><image xlink:href="cover.jpg"/></svg></body></html>"#;
         let parsed = parse(html);

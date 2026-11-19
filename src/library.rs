@@ -102,11 +102,9 @@ impl Library {
             return;
         }
 
-        let [list_area, hint_area] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
+        let [list_area, hint_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .areas(inner);
 
         let rows = usize::from(list_area.height);
         if self.selected < self.offset {
@@ -117,9 +115,7 @@ impl Library {
 
         let mut lines: Vec<Line> = Vec::new();
         if self.books.is_empty() {
-            lines.push(Line::from(
-                " No recent books. Run: slurp BOOK.epub",
-            ));
+            lines.push(Line::from(" No recent books. Run: slurp BOOK.epub"));
         } else {
             for index in self.offset..self.offset.saturating_add(rows) {
                 let Some(book) = self.books.get(index) else {
@@ -139,8 +135,10 @@ impl Library {
         } else {
             Style::default()
         };
-        frame
-            .render_widget(Paragraph::new(Line::styled(hint, style)), hint_area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(hint, style)),
+            hint_area,
+        );
     }
 
     fn row(
@@ -155,8 +153,7 @@ impl Library {
             book.title.clone()
         };
         let percent = (book.progress * 100.0).round().clamp(0.0, 100.0);
-        let mut detail =
-            format!("Chapter {}  {percent}%", book.chapter + 1);
+        let mut detail = format!("Chapter {}  {percent}%", book.chapter + 1);
         if !Path::new(&book.path).exists() {
             detail.push_str("  [missing]");
         }
@@ -168,10 +165,7 @@ impl Library {
         } else {
             Style::default()
         };
-        Line::styled(
-            format!(" {label}{}{detail}", " ".repeat(padding)),
-            style,
-        )
+        Line::styled(format!(" {label}{}{detail}", " ".repeat(padding)), style)
     }
 }
 
@@ -230,13 +224,18 @@ mod tests {
         assert_eq!(library.selected_path(), Some("/c.epub"));
         assert_eq!(press(&mut library, KeyCode::Down), LibraryAction::None);
         assert_eq!(press(&mut library, KeyCode::Enter), LibraryAction::Open(2));
-        assert_eq!(press(&mut library, KeyCode::Char('q')), LibraryAction::Quit);
+        assert_eq!(
+            press(&mut library, KeyCode::Char('q')),
+            LibraryAction::Quit
+        );
     }
 
     #[test]
     fn marks_missing_files() {
         let mut store = Store::default();
-        store.books.push(position("/definitely/missing.epub", "Gone", 1));
+        store
+            .books
+            .push(position("/definitely/missing.epub", "Gone", 1));
         let mut library = Library::new(store);
 
         assert!(screen(&mut library).contains("[missing]"));

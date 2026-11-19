@@ -374,8 +374,8 @@ impl App {
                         if !area.contains(position) {
                             return;
                         }
-                        let index = self.theme_offset
-                            + usize::from(event.row - area.y);
+                        let index =
+                            self.theme_offset + usize::from(event.row - area.y);
                         if index < self.theme_matches.len() {
                             self.theme_selected = index;
                             self.preview_theme();
@@ -1314,7 +1314,8 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
             KeyCode::Up | KeyCode::Char('k') => {
-                self.bookmark_selected = self.bookmark_selected.saturating_sub(1)
+                self.bookmark_selected =
+                    self.bookmark_selected.saturating_sub(1)
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.bookmark_selected = (self.bookmark_selected + 1).min(last)
@@ -1997,11 +1998,9 @@ impl App {
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
 
-        let [list_area, hint_area] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(inner);
+        let [list_area, hint_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .areas(inner);
 
         let rows = usize::from(list_area.height);
         if self.bookmark_selected < self.bookmark_offset {
@@ -2135,14 +2134,22 @@ impl App {
             " [ / ]        slower / faster auto-scroll",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
+            " Tab          next link",
+            " Enter        follow or open",
+            " Ctrl+O       back after link",
             " t            contents (fuzzy search)",
             " %            jump to a percentage",
             " /            full-text search",
             " n / N        next / previous match",
+            " m            add bookmark",
+            " '            bookmarks",
             " i            toggle images",
             " c            toggle continuous mode",
             " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
+            " s            reading time",
+            " S            save settings",
+            " mouse        wheel, click popups",
             " ?            this help",
             " q            quit",
         ];
@@ -2822,6 +2829,30 @@ mod tests {
         let written = std::fs::read_to_string(&config_path).unwrap();
         assert!(written.contains("# keep"));
         assert!(written.contains("images = false"));
+    }
+
+    #[test]
+    fn help_lists_the_new_keys() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.mode(), Mode::Help);
+        let text = screen(&mut app);
+        for needle in [
+            "next link",
+            "follow or open",
+            "back after link",
+            "add bookmark",
+            "bookmarks",
+            "reading time",
+            "save settings",
+            "wheel, click popups",
+        ] {
+            assert!(text.contains(needle), "help is missing {needle}");
+        }
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
     }
 
     #[test]

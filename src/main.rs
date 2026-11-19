@@ -36,6 +36,9 @@ Keys:
   j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
   h/l chapter; t contents;
   % jump to percentage; / search; n/N next/previous match;
+  Tab next link; Enter follow link; Ctrl+O back after link;
+  m add bookmark; ' bookmarks; s reading time; S save settings;
+  mouse wheel scrolls; click opens contents and theme entries;
   i toggle images; a auto-scroll; [ / ] speed; c continuous mode;
   Ctrl+T theme selector;
   +/- text width; ? help; q quit
@@ -50,6 +53,7 @@ Configuration:
   image_max_height = 20
   images = true
   auto_scroll_wpm = 200
+  reading_wpm = 250
   continuous = false
 
   [colors]

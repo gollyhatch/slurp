@@ -123,12 +123,10 @@ impl Config {
             toml_edit::value(i64::from(self.auto_scroll_wpm));
 
         let temporary = path.with_extension("toml.tmp");
-        fs::write(&temporary, document.to_string()).with_context(|| {
-            format!("cannot write {}", temporary.display())
-        })?;
-        fs::rename(&temporary, &path).with_context(|| {
-            format!("cannot replace {}", path.display())
-        })?;
+        fs::write(&temporary, document.to_string())
+            .with_context(|| format!("cannot write {}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .with_context(|| format!("cannot replace {}", path.display()))?;
         Ok(path)
     }
 

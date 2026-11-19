@@ -10,6 +10,20 @@ use rbook::epub::Epub;
 
 use crate::html::{self, Block};
 
+/// Where a link points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A chapter, and optionally a block inside it.
+    Chapter {
+        chapter: usize,
+        block: Option<usize>,
+    },
+    /// A link to a resource outside the book.
+    External,
+    /// A link that has no target in this book.
+    Missing,
+}
+
 /// One readable document from the EPUB spine.
 pub struct Chapter {
     /// Manifest href of the document.
@@ -20,6 +34,10 @@ pub struct Chapter {
     pub blocks: Vec<Block>,
     /// Plain text of each block, used for full-text search.
     pub plain: Vec<String>,
+    /// Element ids inside the chapter and their block index.
+    pub anchors: HashMap<String, usize>,
+    /// Links inside the chapter.
+    pub links: Vec<html::Link>,
 }
 
 /// One entry in the EPUB table of contents.
@@ -273,7 +291,8 @@ impl Book {
         };
         if let Some(fragment) = fragment {
             for &chapter in &candidates {
-                if let Some(block) = self.chapters[chapter].anchors.get(&fragment)
+                if let Some(block) =
+                    self.chapters[chapter].anchors.get(&fragment)
                 {
                     return LinkTarget::Chapter {
                         chapter,
@@ -312,6 +331,41 @@ impl Book {
     }
 }
 
+/// Resolve a relative reference against the directory of a base href.
+///
+/// A path that starts with `/` is resolved from the root of the EPUB.
+fn resolve_relative(base_href: &str, href: &str) -> Option<String> {
+    if href.is_empty() {
+        return None;
+    }
+    let base = percent_decode_str(base_href).decode_utf8_lossy();
+    let target = percent_decode_str(href).decode_utf8_lossy();
+
+    let mut parts: Vec<String> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        let mut parts: Vec<String> = base
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+        parts.pop();
+        parts
+    };
+
+    for segment in target.trim_start_matches('/').split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other.to_string()),
+        }
+    }
+    Some(parts.join("/"))
+}
+
 #[derive(Debug, Clone)]
 struct TocAnchor {
     fragment: Option<String>,
@@ -330,6 +384,8 @@ struct Section {
     blocks: Vec<Block>,
     /// Anchor at which the section starts, when a TOC anchor starts it.
     anchor: Option<String>,
+    /// Index of the first block inside the source document.
+    start_block: usize,
 }
 
 /// Split one XHTML document into sections.
@@ -394,6 +450,7 @@ fn split_sections(
             title: (!label.is_empty()).then(|| label.clone()),
             blocks: blocks[*start..end].to_vec(),
             anchor: anchor.clone(),
+            start_block: *start,
         });
     }
     sections
@@ -418,6 +475,7 @@ fn heading_sections(blocks: Vec<Block>) -> Vec<Section> {
                 title: title.take(),
                 blocks: std::mem::take(&mut current),
                 anchor: None,
+                start_block: 0,
             });
             has_text = false;
         }
@@ -438,7 +496,14 @@ fn heading_sections(blocks: Vec<Block>) -> Vec<Section> {
             title,
             blocks: current,
             anchor: None,
+            start_block: 0,
         });
+    }
+
+    let mut offset = 0;
+    for section in &mut sections {
+        section.start_block = offset;
+        offset += section.blocks.len();
     }
     sections
 }
@@ -552,6 +617,65 @@ mod tests {
             .unwrap();
         let bytes = book.image_bytes(&chapter.href, "img/pic.png").unwrap();
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn resolves_links_inside_the_book() {
+        let fixture = crate::testutil::sample_book();
+        let book = Book::open(&fixture.path).unwrap();
+
+        assert_eq!(
+            book.resolve_link(0, "ch1.xhtml#part-two"),
+            LinkTarget::Chapter {
+                chapter: 1,
+                block: Some(0)
+            }
+        );
+        assert_eq!(
+            book.resolve_link(0, "ch2.xhtml"),
+            LinkTarget::Chapter {
+                chapter: 2,
+                block: None
+            }
+        );
+        assert_eq!(
+            book.resolve_link(0, "#part-two"),
+            LinkTarget::Chapter {
+                chapter: 1,
+                block: Some(0)
+            }
+        );
+        assert_eq!(
+            book.resolve_link(0, "ch2.xhtml#nope"),
+            LinkTarget::Chapter {
+                chapter: 2,
+                block: None
+            }
+        );
+        assert_eq!(book.resolve_link(0, "missing.xhtml"), LinkTarget::Missing);
+        assert_eq!(book.resolve_link(0, "   "), LinkTarget::Missing);
+        assert_eq!(
+            book.resolve_link(0, "https://example.com/page"),
+            LinkTarget::External
+        );
+        assert_eq!(
+            book.resolve_link(0, "mailto:someone@example.com"),
+            LinkTarget::External
+        );
+    }
+
+    #[test]
+    fn keeps_links_inside_their_chapter() {
+        let fixture = crate::testutil::sample_book();
+        let book = Book::open(&fixture.path).unwrap();
+        for chapter in &book.chapters {
+            for link in &chapter.links {
+                assert!(link.block < chapter.blocks.len());
+            }
+            for block in chapter.anchors.values() {
+                assert!(*block < chapter.blocks.len());
+            }
+        }
     }
 
     fn heading(level: u8, text: &str) -> Block {

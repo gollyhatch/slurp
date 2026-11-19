@@ -1,6 +1,6 @@
 //! Wrap chapter blocks into rows for the terminal.
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui_image::picker::Picker;
 use unicode_width::UnicodeWidthChar;
@@ -224,6 +224,7 @@ pub fn build(
                     "",
                     palette.base(),
                     palette.code(),
+                    palette.accent,
                     width,
                     query,
                     highlight,
@@ -238,6 +239,7 @@ pub fn build(
                 "",
                 palette.base(),
                 palette.code(),
+                palette.accent,
                 width,
                 query,
                 highlight,
@@ -251,6 +253,7 @@ pub fn build(
                 "",
                 palette.base(),
                 palette.code(),
+                palette.accent,
                 width,
                 query,
                 highlight,
@@ -264,6 +267,7 @@ pub fn build(
                 "  ",
                 palette.muted(),
                 palette.code(),
+                palette.accent,
                 width,
                 query,
                 highlight,
@@ -285,6 +289,7 @@ pub fn build(
                     &rest,
                     palette.muted(),
                     palette.code(),
+                    palette.accent,
                     width,
                     query,
                     highlight,
@@ -366,6 +371,7 @@ pub fn build(
                             "",
                             palette.muted(),
                             palette.code(),
+                            palette.accent,
                             width,
                             query,
                             highlight,
@@ -440,11 +446,12 @@ fn push_wrapped(
     prefix_rest: &str,
     prefix_style: Style,
     code_style: Style,
+    link_color: Color,
     width: usize,
     query: Option<&str>,
     highlight: Style,
 ) {
-    let chars = inline_chars(inlines, style, code_style);
+    let chars = inline_chars(inlines, style, code_style, link_color);
     if chars.is_empty() {
         return;
     }
@@ -479,6 +486,7 @@ fn inline_chars(
     inlines: &[Inline],
     style: Style,
     code_style: Style,
+    link_color: Color,
 ) -> Vec<StyledChar> {
     let mut chars = Vec::new();
     for inline in inlines {
@@ -491,6 +499,9 @@ fn inline_chars(
         }
         if inline.flags.italic {
             style = style.add_modifier(Modifier::ITALIC);
+        }
+        if inline.flags.link {
+            style = style.fg(link_color).add_modifier(Modifier::UNDERLINED);
         }
         for ch in inline.text.chars() {
             chars.push(StyledChar { ch, style });
@@ -775,6 +786,8 @@ mod tests {
                 "alpha beta gamma delta epsilon".into(),
                 "missing".into(),
             ],
+            anchors: HashMap::new(),
+            links: Vec::new(),
         };
         let palette = crate::theme::Palette {
             text: ratatui::style::Color::White,
@@ -855,6 +868,8 @@ mod tests {
                 flags: InlineFlags::default(),
             }])],
             plain: vec!["one".into()],
+            anchors: HashMap::new(),
+            links: Vec::new(),
         };
         let palette = crate::theme::Palette {
             text: ratatui::style::Color::White,
@@ -911,6 +926,8 @@ mod tests {
                 }]),
             ],
             plain: vec!["one".into(), "line two".into(), "three".into()],
+            anchors: HashMap::new(),
+            links: Vec::new(),
         };
         let palette = crate::theme::Palette {
             text: ratatui::style::Color::White,
@@ -944,6 +961,72 @@ mod tests {
     }
 
     #[test]
+    fn underlines_link_text() {
+        let chapter = Chapter {
+            href: "ch1.xhtml".into(),
+            title: "One".into(),
+            blocks: vec![Block::Paragraph(vec![
+                Inline {
+                    text: "see ".into(),
+                    flags: InlineFlags::default(),
+                },
+                Inline {
+                    text: "note".into(),
+                    flags: InlineFlags {
+                        link: true,
+                        ..InlineFlags::default()
+                    },
+                },
+            ])],
+            plain: vec!["see note".into()],
+            anchors: HashMap::new(),
+            links: Vec::new(),
+        };
+        let palette = crate::theme::Palette {
+            text: ratatui::style::Color::White,
+            background: ratatui::style::Color::Black,
+            heading: ratatui::style::Color::Yellow,
+            accent: ratatui::style::Color::Cyan,
+            muted: ratatui::style::Color::Gray,
+            search: ratatui::style::Color::Red,
+            search_text: ratatui::style::Color::Black,
+            status_bg: ratatui::style::Color::Blue,
+            status_fg: ratatui::style::Color::White,
+            border: ratatui::style::Color::Gray,
+            selection: ratatui::style::Color::DarkGray,
+        };
+        let options = Options {
+            width: 40,
+            paragraph_spacing: 1,
+            image_max_rows: 10,
+            images: true,
+            trailing_blank_rows: 0,
+            query: None,
+        };
+        let view =
+            build(&chapter, &palette, &options, &Picker::halfblocks(), |_| {
+                None
+            });
+        let line = view
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Line { line, .. } => Some(line),
+                _ => None,
+            })
+            .unwrap();
+        assert!(line.spans.iter().any(|span| {
+            span.content.contains("note")
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+                && span.style.fg == Some(ratatui::style::Color::Cyan)
+        }));
+        assert!(line.spans.iter().any(|span| {
+            span.content.contains("see")
+                && span.style.fg == Some(ratatui::style::Color::White)
+        }));
+    }
+
+    #[test]
     fn sizes_images_by_aspect_ratio() {
         let chapter = Chapter {
             href: "ch1.xhtml".into(),
@@ -953,6 +1036,8 @@ mod tests {
                 alt: String::new(),
             }],
             plain: vec![String::new()],
+            anchors: HashMap::new(),
+            links: Vec::new(),
         };
         let palette = crate::theme::Palette {
             text: ratatui::style::Color::White,
@@ -1007,6 +1092,8 @@ mod tests {
                 alt: "dot".into(),
             }],
             plain: vec!["dot".into()],
+            anchors: HashMap::new(),
+            links: Vec::new(),
         };
         let palette = crate::theme::Palette {
             text: ratatui::style::Color::White,
