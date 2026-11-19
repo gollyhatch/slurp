@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -562,18 +564,27 @@ impl App {
     }
 
     fn refresh_toc_matches(&mut self) {
-        let needle = self.toc_filter.to_lowercase();
-        self.toc_matches = self
-            .book
-            .toc
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                needle.is_empty()
-                    || entry.title.to_lowercase().contains(&needle)
-            })
-            .map(|(index, _)| index)
-            .collect();
+        if self.toc_filter.is_empty() {
+            self.toc_matches = (0..self.book.toc.len()).collect();
+        } else {
+            let matcher = SkimMatcherV2::default().ignore_case();
+            let mut scored: Vec<(i64, usize)> = self
+                .book
+                .toc
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    matcher
+                        .fuzzy_match(&entry.title, &self.toc_filter)
+                        .map(|score| (score, index))
+                })
+                .collect();
+            scored.sort_by(|left, right| {
+                right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
+            });
+            self.toc_matches =
+                scored.into_iter().map(|(_, index)| index).collect();
+        }
         self.toc_selected = 0;
     }
 
@@ -1414,7 +1425,7 @@ impl App {
             " [ / ]        slower / faster auto-scroll",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
-            " t            contents (type to filter)",
+            " t            contents (fuzzy search)",
             " %            jump to a percentage",
             " /            full-text search",
             " n / N        next / previous match",
@@ -1808,10 +1819,10 @@ mod tests {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);
         press(&mut app, KeyCode::Char('t'));
-        type_text(&mut app, "part");
+        type_text(&mut app, "ptw");
 
         let text = screen(&mut app);
-        assert!(text.contains("filter: part"));
+        assert!(text.contains("filter: ptw"));
         assert!(text.contains("Part Two"));
 
         press(&mut app, KeyCode::Enter);

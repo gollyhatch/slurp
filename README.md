@@ -17,8 +17,8 @@ slurp book.epub
 - Jump anywhere in the book with `%` and a percentage.
 - Auto-scroll at a configurable speed in words per minute. It stops at
   popups and moves to the next chapter when the screen ends.
-- The `t` popup uses the EPUB table of contents and can be filtered by
-  typing. If the book has none, the popup says so.
+- The `t` popup uses the EPUB table of contents with fuzzy filtering. If the
+  book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
 - Remembers the chapter and scroll position for each book and returns to the
   same place on the next start.
@@ -45,7 +45,7 @@ The binary is `target/release/slurp`.
 | `PageDown` / `PageUp`, `b` | Scroll one page (`b` goes up) |
 | `g` / `G`, `Home` / `End` | Start or end of the chapter |
 | `h` / `l`, `Left` / `Right` | Previous or next chapter |
-| `t` | Searchable table of contents from the EPUB |
+| `t` | Fuzzy-searchable table of contents from the EPUB |
 | `%` | Jump to a percentage of the book |
 | `/` | Search all chapters |
 | `Enter` | Run the search, apply the percentage, or open the selected chapter |
