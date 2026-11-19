@@ -27,8 +27,8 @@ Options:
 Keys:
   j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
   h/l chapter; t contents;
-  % search; n/N next/previous match; i toggle images;
-  Ctrl+T theme selector;
+  % jump to percentage; / search; n/N next/previous match;
+  i toggle images; Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
 Configuration:

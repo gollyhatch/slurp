@@ -31,6 +31,7 @@ const MAX_HITS: usize = 5000;
 pub enum Mode {
     Normal,
     Search,
+    Percent,
     Toc,
     Help,
     Theme,
@@ -85,6 +86,8 @@ pub struct App {
     state_path: PathBuf,
     book_key: String,
     pending_progress: Option<f32>,
+    chapter_chars: Vec<usize>,
+    total_chars: usize,
 }
 
 impl App {
@@ -97,6 +100,14 @@ impl App {
     ) -> Result<Self> {
         let book = Book::open(book_path)?;
         let (_theme, palette) = theme::load(&config.theme, &config.colors)?;
+        let chapter_chars: Vec<usize> = book
+            .chapters
+            .iter()
+            .map(|chapter| {
+                chapter.plain.iter().map(|text| text.chars().count()).sum()
+            })
+            .collect();
+        let total_chars = chapter_chars.iter().sum();
 
         let book_key = fs::canonicalize(book_path)
             .unwrap_or_else(|_| book_path.to_path_buf())
@@ -145,6 +156,8 @@ impl App {
             state_path,
             book_key,
             pending_progress: saved.map(|position| position.progress),
+            chapter_chars,
+            total_chars,
         };
         app.rebuild_view();
         Ok(app)
@@ -223,6 +236,7 @@ impl App {
         match self.mode {
             Mode::Normal => self.key_normal(key),
             Mode::Search => self.key_search(key),
+            Mode::Percent => self.key_percent(key),
             Mode::Toc => self.key_toc(key),
             Mode::Theme => self.key_theme(key),
             Mode::Help => {
@@ -276,8 +290,12 @@ impl App {
             _ => {}
         }
 
-        if self.mode == Mode::Search {
-            let prompt = format!("% {}", self.input);
+        let prompt = match self.mode {
+            Mode::Search => Some(format!("/ {}", self.input)),
+            Mode::Percent => Some(format!("goto {}", self.input)),
+            _ => None,
+        };
+        if let Some(prompt) = prompt {
             let x = footer_area
                 .x
                 .saturating_add(1)
@@ -321,7 +339,11 @@ impl App {
                 self.toc_selected = self.chapter;
                 self.mode = Mode::Toc;
             }
-            KeyCode::Char('%') | KeyCode::Char('/') => {
+            KeyCode::Char('%') => {
+                self.input.clear();
+                self.mode = Mode::Percent;
+            }
+            KeyCode::Char('/') => {
                 self.search_before = self.search.clone();
                 self.input.clear();
                 self.mode = Mode::Search;
@@ -366,6 +388,95 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn key_percent(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                let text = std::mem::take(&mut self.input);
+                self.mode = Mode::Normal;
+                match text.trim().parse::<u32>() {
+                    Ok(percent) => self.jump_to_percent(percent.min(100) as u8),
+                    Err(_) => {
+                        self.message =
+                            Some("enter a number from 0 to 100".to_string())
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(ch)
+                if ch.is_ascii_digit()
+                    && self.input.len() < 3
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.input.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn jump_to_percent(&mut self, percent: u8) {
+        if self.book.chapters.is_empty() || self.total_chars == 0 {
+            self.message = Some("book has no text".to_string());
+            return;
+        }
+        let percent = percent.min(100) as usize;
+        let target = (self.total_chars * percent + 50) / 100;
+
+        let mut accumulated = 0;
+        let mut chapter = self.book.chapters.len() - 1;
+        let mut fraction = 1.0;
+        for (index, &chars) in self.chapter_chars.iter().enumerate() {
+            let end = accumulated + chars;
+            if target < end || index == self.book.chapters.len() - 1 {
+                fraction = if chars > 0 {
+                    target.saturating_sub(accumulated).min(chars) as f32
+                        / chars as f32
+                } else {
+                    0.0
+                };
+                chapter = index;
+                break;
+            }
+            accumulated = end;
+        }
+
+        self.chapter = chapter;
+        self.toc_selected = chapter;
+        self.scroll = 0;
+        self.rebuild_view();
+        let max = self.max_scroll();
+        let row = (fraction * self.view.total_rows as f32).round() as usize;
+        self.scroll = self.snap(row.min(max), true).min(max);
+        let _ = self.save_position();
+    }
+
+    /// Approximate position in the whole book, from 0 to 100.
+    pub fn book_percent(&self) -> u8 {
+        if self.total_chars == 0 || self.book.chapters.is_empty() {
+            return 0;
+        }
+        if self.chapter + 1 == self.book.chapters.len()
+            && self.scroll >= self.max_scroll()
+        {
+            return 100;
+        }
+        let before: usize = self.chapter_chars.iter().take(self.chapter).sum();
+        let chars = self.chapter_chars.get(self.chapter).copied().unwrap_or(0);
+        let local = if self.view.total_rows > 0 {
+            (self.scroll as f32 / self.view.total_rows as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let inside = (local * chars as f32).round() as usize;
+        (((before + inside) * 100) / self.total_chars).min(100) as u8
     }
 
     fn key_toc(&mut self, key: KeyEvent) {
@@ -759,21 +870,31 @@ impl App {
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        if self.mode == Mode::Search {
-            let line = bar_line(
-                &format!("% {}", self.input),
-                "",
-                area.width,
-                self.palette.status(),
-            );
-            frame.render_widget(Paragraph::new(line), area);
-            return;
+        match self.mode {
+            Mode::Search => {
+                let line = bar_line(
+                    &format!("/ {}", self.input),
+                    "",
+                    area.width,
+                    self.palette.status(),
+                );
+                frame.render_widget(Paragraph::new(line), area);
+                return;
+            }
+            Mode::Percent => {
+                let line = bar_line(
+                    &format!("goto {}%", self.input),
+                    "",
+                    area.width,
+                    self.palette.status(),
+                );
+                frame.render_widget(Paragraph::new(line), area);
+                return;
+            }
+            _ => {}
         }
 
-        let progress = (self.scroll * 100)
-            .checked_div(self.view.total_rows)
-            .unwrap_or(0)
-            .min(100);
+        let progress = self.book_percent();
         let mut left = if let Some(message) = &self.message {
             format!(" {message}")
         } else {
@@ -1056,7 +1177,8 @@ impl App {
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
             " t            table of contents",
-            " % or /       full-text search",
+            " %            jump to a percentage",
+            " /            full-text search",
             " n / N        next / previous match",
             " i            toggle images",
             " Ctrl+T       theme selector",
@@ -1223,7 +1345,7 @@ mod tests {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);
 
-        press(&mut app, KeyCode::Char('%'));
+        press(&mut app, KeyCode::Char('/'));
         assert_eq!(app.mode(), Mode::Search);
         type_text(&mut app, "theta");
         press(&mut app, KeyCode::Enter);
@@ -1235,6 +1357,35 @@ mod tests {
 
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.search().unwrap().current, 1);
+    }
+
+    #[test]
+    fn jumps_to_book_percentage() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+
+        press(&mut app, KeyCode::Char('%'));
+        assert_eq!(app.mode(), Mode::Percent);
+        type_text(&mut app, "50");
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.mode(), Mode::Normal);
+        let middle = app.book_percent();
+        assert!((45..=55).contains(&middle), "middle was {middle}");
+        assert!(app.chapter() > 0);
+
+        press(&mut app, KeyCode::Char('%'));
+        type_text(&mut app, "100");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.book_percent(), 100);
+
+        press(&mut app, KeyCode::Char('%'));
+        type_text(&mut app, "0");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.chapter(), 0);
+        assert_eq!(app.scroll(), 0);
+        assert_eq!(app.book_percent(), 0);
     }
 
     #[test]

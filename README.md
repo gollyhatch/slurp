@@ -1,7 +1,7 @@
 # slurp
 
-A terminal EPUB reader with vim-like keys, full-text search, inline images,
-and per-book reading positions.
+A terminal EPUB reader with vim-like keys, full-text search, percentage
+jumps, inline images, and per-book reading positions.
 
 ```
 slurp book.epub
@@ -12,8 +12,9 @@ slurp book.epub
 - Reflows EPUB text to any terminal width. Set a maximum text width in the
   config file or change it while reading with `+` and `-`.
 - Vim-like scrolling and chapter navigation. Chapters follow the EPUB
-table of contents, including several chapters inside one file.
-- Full-text search across all chapters with `%`, and match highlighting.
+  table of contents, including several chapters inside one file.
+- Full-text search across all chapters with `/`, and match highlighting.
+- Jump anywhere in the book with `%` and a percentage.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
 - Remembers the chapter and scroll position for each book and returns to the
   same place on the next start.
@@ -41,14 +42,15 @@ The binary is `target/release/slurp`.
 | `g` / `G`, `Home` / `End` | Start or end of the chapter |
 | `h` / `l`, `Left` / `Right` | Previous or next chapter |
 | `t` | Table of contents |
-| `%` or `/` | Search all chapters |
-| `Enter` | Run the search, or open the selected chapter |
+| `%` | Jump to a percentage of the book |
+| `/` | Search all chapters |
+| `Enter` | Run the search, apply the percentage, or open the selected chapter |
 | `n` / `N` | Next or previous match |
 | `i` | Toggle images |
 | `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
 | `?` | Show the key help |
-| `Esc` | Close a popup or clear the search |
+| `Esc` | Cancel a prompt, close a popup, or clear the search |
 | `q`, `Ctrl-C` | Save the position and quit |
 
 ## Configuration
