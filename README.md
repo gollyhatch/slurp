@@ -51,6 +51,8 @@ All screenshots use the built-in `ayu-dark` theme.
   popups and moves to the next chapter when the screen ends.
 - Optional continuous mode that scrolls through all chapters as one stream,
   with no chapter switch needed. Two blank rows separate chapters.
+- Optional thin color lines left of each paragraph. Five theme colors cycle
+  through the text, so a paragraph is easy to find again after scrolling.
 - The `t` popup uses the EPUB table of contents with fuzzy filtering. If the
   book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
@@ -100,6 +102,7 @@ The binary is `target/release/slurp`.
 | `i` | Toggle images |
 | `a` | Toggle auto-scroll |
 | `c` | Toggle continuous mode |
+| `p` | Toggle paragraph color bars |
 | `[` / `]` | Slower or faster auto-scroll (25 words per minute steps) |
 | `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
@@ -140,6 +143,9 @@ reading_wpm = 250
 
 # Scroll through all chapters as one stream.
 continuous = false
+
+# Draw a color bar left of each paragraph, cycling through five theme colors.
+paragraph_colors = false
 
 # Optional per-role colors. Values are "#rrggbb".
 [colors]

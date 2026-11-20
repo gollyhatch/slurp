@@ -97,6 +97,16 @@ impl View {
             .find(|top| *top > row)
     }
 
+    /// Ordinal of the paragraph that an item belongs to.
+    ///
+    /// Line blocks from `<br>` belong to the paragraph before them, so the
+    /// indicator stays continuous across a wrapped paragraph.
+    pub fn paragraph_of_item(&self, index: usize) -> Option<usize> {
+        let position =
+            self.paragraph_starts.partition_point(|start| *start <= index);
+        (position > 0).then_some(position - 1)
+    }
+
     /// Rows used by an item.
     pub fn rows(&self, index: usize) -> usize {
         self.tops[index + 1] - self.tops[index]
@@ -170,6 +180,31 @@ impl View {
 
         best.or(first)
             .or_else(|| self.block_first_item.get(block).copied())
+    }
+}
+
+/// Number of paragraph indicators a chapter draws.
+///
+/// Matches `View::paragraph_starts` without laying out or wrapping the text,
+/// so the indicator colors can continue across chapters.
+pub fn paragraph_count(chapter: &Chapter) -> usize {
+    chapter.blocks.iter().filter(|block| is_paragraph(block)).count()
+}
+
+fn is_paragraph(block: &Block) -> bool {
+    match block {
+        Block::Line(_) | Block::Rule => false,
+        Block::Pre(_) | Block::Image { .. } => true,
+        Block::Heading { content, .. }
+        | Block::Paragraph(content)
+        | Block::Quote(content)
+        | Block::ListItem { content, .. } => {
+            // `push_wrapped` drops content that has no characters other than
+            // spaces, so those blocks start no paragraph.
+            content
+                .iter()
+                .any(|inline| inline.text.chars().any(|ch| ch != ' '))
+        }
     }
 }
 
@@ -801,6 +836,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 20,
@@ -830,7 +872,11 @@ mod tests {
         assert_eq!(view.block_first_item.len(), 3);
         assert!(view.find_hit(1, "gamma", 0).is_some());
         assert_eq!(view.paragraph_starts, vec![0, 2, 5]);
+        assert_eq!(paragraph_count(&chapter), view.paragraph_starts.len());
         assert_eq!(view.next_paragraph_row(0), Some(2));
+        assert_eq!(view.paragraph_of_item(0), Some(0));
+        assert_eq!(view.paragraph_of_item(2), Some(1));
+        assert_eq!(view.paragraph_of_item(5), Some(2));
 
         let highlighted = build(
             &chapter,
@@ -859,6 +905,59 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_count_matches_laid_out_paragraphs() {
+        let inline = |text: &str| Inline {
+            text: text.into(),
+            flags: InlineFlags::default(),
+        };
+        let chapter = Chapter {
+            href: "ch.xhtml".into(),
+            title: "T".into(),
+            blocks: vec![
+                Block::Heading {
+                    level: 1,
+                    content: Vec::new(),
+                },
+                Block::Paragraph(vec![inline("   ")]),
+                Block::Paragraph(vec![inline("text")]),
+                Block::Line(vec![inline("line")]),
+                Block::Quote(vec![inline("quote")]),
+                Block::ListItem {
+                    marker: "\u{2022}".into(),
+                    depth: 1,
+                    content: vec![inline("item")],
+                },
+                Block::Pre(Vec::new()),
+                Block::Rule,
+                Block::Image {
+                    src: "x.png".into(),
+                    alt: String::new(),
+                },
+            ],
+            plain: Vec::new(),
+            anchors: HashMap::new(),
+            links: Vec::new(),
+        };
+        let palette =
+            crate::theme::load("nord", &std::collections::BTreeMap::new())
+                .unwrap()
+                .1;
+        let view = build(
+            &chapter,
+            &palette,
+            &Options {
+                width: 40,
+                images: false,
+                ..Options::default()
+            },
+            &Picker::halfblocks(),
+            |_| None,
+        );
+        assert_eq!(paragraph_count(&chapter), 5);
+        assert_eq!(paragraph_count(&chapter), view.paragraph_starts.len());
+    }
+
+    #[test]
     fn appends_trailing_blank_rows() {
         let chapter = Chapter {
             href: "ch1.xhtml".into(),
@@ -883,6 +982,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 40,
@@ -941,6 +1047,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 40,
@@ -1038,6 +1151,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 40,
@@ -1095,6 +1215,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 40,
@@ -1151,6 +1278,13 @@ mod tests {
             status_fg: ratatui::style::Color::White,
             border: ratatui::style::Color::Gray,
             selection: ratatui::style::Color::DarkGray,
+            markers: [
+                ratatui::style::Color::Red,
+                ratatui::style::Color::Green,
+                ratatui::style::Color::Yellow,
+                ratatui::style::Color::Blue,
+                ratatui::style::Color::Magenta,
+            ],
         };
         let options = Options {
             width: 40,

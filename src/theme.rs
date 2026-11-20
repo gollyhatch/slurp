@@ -89,6 +89,8 @@ pub struct Palette {
     pub status_fg: Color,
     pub border: Color,
     pub selection: Color,
+    /// Five colors cycled by the paragraph indicators.
+    pub markers: [Color; 5],
 }
 
 /// Return the role for a config key.
@@ -162,7 +164,9 @@ pub fn load(
         status_fg: color(&ROLES[8]),
         border: color(&ROLES[9]),
         selection: color(&ROLES[10]),
+        markers: [Color::Reset; 5],
     };
+    palette.markers = marker_colors(&theme, &palette);
 
     // A faint theme panel can look like body text. Derive a strip that always
     // differs from the page unless the user names a status color.
@@ -190,6 +194,124 @@ fn blend(base: Color, toward: Color, amount: f32) -> Color {
         mix(base_g, other_g),
         mix(base_b, other_b),
     )
+}
+
+/// Theme tokens tried, in order, for the five indicator colors.
+const MARKER_TOKENS: &[&str] = &[
+    "accent.primary",
+    "accent.secondary",
+    "accent.tertiary",
+    "accent.deep",
+    "success",
+    "warning",
+    "error",
+    "info",
+    "text.primary",
+    "text.muted",
+];
+
+/// Five indicator colors from the theme's accent roles, ordered so that
+/// neighboring bars are as far apart as the palette allows. This keeps the
+/// cycle readable even when a terminal quantizes RGB to a small palette.
+fn marker_colors(theme: &Theme, palette: &Palette) -> [Color; 5] {
+    /// Squared RGB distance from the page color a bar needs to stay visible.
+    const MIN_CONTRAST: u32 = 15000;
+
+    let mut themed: Vec<Color> = Vec::with_capacity(16);
+    let mut shades: Vec<Color> = Vec::with_capacity(20);
+    let mut all: Vec<Color> = Vec::with_capacity(40);
+    let mut add = |color: Color| {
+        if color == palette.background || all.contains(&color) {
+            return;
+        }
+        all.push(color);
+        if color_distance(color, palette.background) >= MIN_CONTRAST {
+            themed.push(color);
+        }
+    };
+    for token in MARKER_TOKENS {
+        if let Some(color) = theme.try_color(token) {
+            add(Color::from(color));
+        }
+    }
+    for color in [
+        palette.heading,
+        palette.accent,
+        palette.search,
+        palette.text,
+        palette.muted,
+    ] {
+        add(color);
+    }
+    for step in 1..=20 {
+        let color = blend(
+            palette.background,
+            palette.text,
+            step as f32 / 20.0,
+        );
+        if color != palette.background
+            && !all.contains(&color)
+            && !shades.contains(&color)
+        {
+            shades.push(color);
+            all.push(color);
+        }
+    }
+
+    // Theme colors first. Shades of the text color are only needed when a
+    // theme defines fewer than five usable accent colors.
+    let mut candidates = themed;
+    if candidates.len() < 5 {
+        for color in &shades {
+            if !candidates.contains(color) {
+                candidates.push(*color);
+            }
+        }
+    }
+    if candidates.is_empty() {
+        candidates.push(palette.text);
+    }
+
+    // Greedy farthest-point selection: each new color is the candidate with
+    // the largest distance to every color already picked.
+    let mut colors: Vec<Color> = Vec::with_capacity(5);
+    colors.push(
+        candidates
+            .iter()
+            .copied()
+            .find(|color| *color == palette.heading)
+            .unwrap_or(candidates[0]),
+    );
+    while colors.len() < 5 {
+        let next = candidates
+            .iter()
+            .copied()
+            .filter(|color| !colors.contains(color))
+            .max_by_key(|color| {
+                colors
+                    .iter()
+                    .map(|chosen| color_distance(*color, *chosen))
+                    .min()
+                    .unwrap_or(0)
+            });
+        match next {
+            Some(color) => colors.push(color),
+            None => break,
+        }
+    }
+    while colors.len() < 5 {
+        colors.push(palette.text);
+    }
+    colors.try_into().expect("filled to five")
+}
+
+/// Squared RGB distance, used to spread the indicator colors.
+fn color_distance(left: Color, right: Color) -> u32 {
+    let (Color::Rgb(lr, lg, lb), Color::Rgb(rr, rg, rb)) = (left, right) else {
+        return 0;
+    };
+    let diff = |a: u8, b: u8| u32::from(a.abs_diff(b)).pow(2);
+    diff(lr, rr) + diff(lg, rg) + diff(lb, rb)
 }
 
 impl Palette {
@@ -299,6 +421,42 @@ mod tests {
         overrides.insert("status_bg".to_string(), "#010203".to_string());
         let (_theme, palette) = load("nord", &overrides).unwrap();
         assert_eq!(palette.status_bg, Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn marker_colors_are_five_distinct_theme_colors() {
+        for &(id, _) in builtin_names() {
+            let (_theme, palette) = load(id, &BTreeMap::new()).unwrap();
+            for (index, color) in palette.markers.iter().enumerate() {
+                assert_ne!(
+                    *color, palette.background,
+                    "{id} marker {index} is the page color"
+                );
+                assert!(
+                    !palette.markers[..index].contains(color),
+                    "{id} repeats marker color {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn marker_neighbors_are_far_apart() {
+        for &(id, _) in builtin_names() {
+            let (_theme, palette) = load(id, &BTreeMap::new()).unwrap();
+            for index in 0..5 {
+                let next = (index + 1) % 5;
+                let distance = color_distance(
+                    palette.markers[index],
+                    palette.markers[next],
+                );
+                assert!(
+                    distance >= 2500,
+                    "{id}: markers {index} and {next} are too close \
+                     ({distance})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -41,6 +41,7 @@ Keys:
   m add bookmark; ' bookmarks; s reading time; S save settings;
   mouse wheel scrolls; click opens contents and theme entries;
   i toggle images; a auto-scroll; [ / ] speed; c continuous mode;
+  p paragraph color bars;
   Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
@@ -56,6 +57,7 @@ Configuration:
   auto_scroll_wpm = 200
   reading_wpm = 250
   continuous = false
+  paragraph_colors = false
 
   [colors]
   text = \"#cdd6f4\"

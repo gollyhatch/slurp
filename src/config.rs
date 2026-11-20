@@ -32,6 +32,9 @@ pub struct Config {
     pub reading_wpm: u16,
     /// Scroll through all chapters as one continuous stream.
     pub continuous: bool,
+    /// Draw a color bar left of each paragraph, cycling through five theme
+    /// colors, to help find the reading position while scrolling.
+    pub paragraph_colors: bool,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
     pub colors: BTreeMap<String, String>,
     /// File the configuration was loaded from, if any.
@@ -51,6 +54,7 @@ impl Default for Config {
             auto_scroll_wpm: 200,
             reading_wpm: 250,
             continuous: false,
+            paragraph_colors: false,
             colors: BTreeMap::new(),
             path: None,
         }
@@ -118,6 +122,7 @@ impl Config {
         document["theme"] = toml_edit::value(self.theme.clone());
         document["text_width"] = toml_edit::value(i64::from(self.text_width));
         document["continuous"] = toml_edit::value(self.continuous);
+        document["paragraph_colors"] = toml_edit::value(self.paragraph_colors);
         document["images"] = toml_edit::value(self.images);
         document["auto_scroll_wpm"] =
             toml_edit::value(i64::from(self.auto_scroll_wpm));
@@ -184,6 +189,7 @@ mod tests {
             auto_scroll_wpm = 300
             reading_wpm = 320
             continuous = true
+            paragraph_colors = true
 
             [colors]
             text = "#cdd6f4"
@@ -197,6 +203,7 @@ mod tests {
         assert_eq!(config.auto_scroll_wpm, 300);
         assert_eq!(config.reading_wpm, 320);
         assert!(config.continuous);
+        assert!(config.paragraph_colors);
         assert_eq!(config.colors.len(), 2);
     }
 
@@ -213,6 +220,7 @@ mod tests {
         config.theme = "catppuccin-mocha".into();
         config.text_width = 100;
         config.continuous = true;
+        config.paragraph_colors = true;
         config.images = false;
         config.auto_scroll_wpm = 300;
 
@@ -225,6 +233,7 @@ mod tests {
         assert_eq!(loaded.theme, "catppuccin-mocha");
         assert_eq!(loaded.text_width, 100);
         assert!(loaded.continuous);
+        assert!(loaded.paragraph_colors);
         assert!(!loaded.images);
         assert_eq!(loaded.auto_scroll_wpm, 300);
     }

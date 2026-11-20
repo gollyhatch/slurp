@@ -107,6 +107,8 @@ pub struct App {
     chapter_chars: Vec<usize>,
     total_chars: usize,
     chapter_words: Vec<usize>,
+    /// Indicator color offset of each chapter, in paragraphs.
+    chapter_paragraph_offsets: Vec<usize>,
     auto_scroll: bool,
     auto_scroll_wpm: u16,
     auto_scroll_accumulator: f64,
@@ -148,6 +150,13 @@ impl App {
             .unwrap_or_else(|_| book_path.to_path_buf())
             .to_string_lossy()
             .into_owned();
+        let mut chapter_paragraph_offsets =
+            Vec::with_capacity(book.chapters.len());
+        let mut offset = 0;
+        for chapter in &book.chapters {
+            chapter_paragraph_offsets.push(offset);
+            offset += layout::paragraph_count(chapter);
+        }
         let store = Store::load(&state_path);
         let saved = store.get(&book_key).cloned();
         let bookmarks = saved
@@ -210,6 +219,7 @@ impl App {
             chapter_chars,
             total_chars,
             chapter_words,
+            chapter_paragraph_offsets,
             auto_scroll: false,
             auto_scroll_wpm,
             auto_scroll_accumulator: 0.0,
@@ -563,6 +573,13 @@ impl App {
                 self.message = Some(format!(
                     "continuous: {}",
                     if self.config.continuous { "on" } else { "off" }
+                ));
+            }
+            KeyCode::Char('p') => {
+                self.config.paragraph_colors = !self.config.paragraph_colors;
+                self.message = Some(format!(
+                    "paragraph colors: {}",
+                    if self.config.paragraph_colors { "on" } else { "off" }
                 ));
             }
             KeyCode::Char('a') => self.toggle_auto_scroll(),
@@ -1659,6 +1676,11 @@ impl App {
         let width = usize::from(area.width);
         let content_width = usize::from(self.content_width).min(width).max(1);
         let x = area.x + ((width - content_width) / 2) as u16;
+        // Keep a blank column between the indicator and the first glyph.
+        let bar_x = x
+            .checked_sub(2)
+            .filter(|bar| *bar >= area.x)
+            .or_else(|| x.checked_sub(1).filter(|bar| *bar >= area.x));
 
         let mut chapter = self.chapter;
         let mut row = self.scroll;
@@ -1687,11 +1709,25 @@ impl App {
             }
 
             while index < item_count && y < area.bottom() {
-                let (paint, rows, top) = {
+                let (paint, rows, top, marker) = {
                     let view = self.view_ref(chapter);
                     let rows =
                         u16::try_from(view.rows(index)).unwrap_or(u16::MAX);
                     let top = view.tops[index];
+                    let marker = match &view.items[index] {
+                        layout::Item::Line { plain, .. }
+                            if plain.is_empty() =>
+                        {
+                            None
+                        }
+                        _ => view.paragraph_of_item(index).map(|ordinal| {
+                            self.chapter_paragraph_offsets
+                                .get(chapter)
+                                .copied()
+                                .unwrap_or(0)
+                                + ordinal
+                        }),
+                    };
                     let paint = match &view.items[index] {
                         layout::Item::Line { line, .. } => {
                             Paint::Line(line.clone())
@@ -1704,7 +1740,7 @@ impl App {
                             }
                         }
                     };
-                    (paint, rows, top)
+                    (paint, rows, top, marker)
                 };
 
                 if top < row {
@@ -1713,6 +1749,26 @@ impl App {
                 }
 
                 let height = rows.min(area.bottom() - y);
+
+                if self.config.paragraph_colors {
+                    if let (Some(bar_x), Some(marker)) = (bar_x, marker) {
+                        let color = self.palette.markers
+                            [marker % self.palette.markers.len()];
+                        let style = Style::default()
+                            .fg(color)
+                            .bg(self.palette.background);
+                        for offset in 0..height {
+                            let rect = Rect::new(bar_x, y + offset, 1, 1);
+                            frame.render_widget(
+                                Paragraph::new(Line::from(Span::styled(
+                                    "\u{2502}", style,
+                                ))),
+                                rect,
+                            );
+                        }
+                    }
+                }
+
                 match paint {
                     Paint::Line(line) => {
                         let rect = Rect::new(x, y, content_width as u16, 1);
@@ -2165,6 +2221,7 @@ impl App {
             " '            bookmarks",
             " i            toggle images",
             " c            toggle continuous mode",
+            " p            toggle paragraph colors",
             " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
             " s            reading time",
@@ -2583,6 +2640,111 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_colors_draw_a_cycling_gutter() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let body_rows =
+            terminal.backend().buffer().area.height.saturating_sub(1);
+        let buffer = terminal.backend().buffer();
+        assert!((0..body_rows).all(|y| {
+            buffer[(0, y)].symbol() != "\u{2502}"
+        }));
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.config.paragraph_colors);
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut runs = Vec::new();
+        let mut previous = None;
+        for y in 0..body_rows {
+            let cell = &buffer[(0, y)];
+            if cell.symbol() != "\u{2502}" {
+                continue;
+            }
+            let color = cell.fg;
+            if previous != Some(color) {
+                runs.push(color);
+            }
+            previous = Some(color);
+        }
+        assert!(runs.len() >= 2, "expected several paragraph bars");
+        for pair in runs.windows(2) {
+            let index = |color| {
+                app.palette
+                    .markers
+                    .iter()
+                    .position(|marker| *marker == color)
+                    .unwrap_or_else(|| {
+                        panic!("bar color {color:?} is not a marker")
+                    })
+            };
+            assert_eq!(index(pair[1]), (index(pair[0]) + 1) % 5);
+        }
+        assert!(screen(&mut app).contains("paragraph colors: on"));
+    }
+
+    #[test]
+    fn paragraph_colors_continue_across_chapters() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('c'));
+        let last_text = app
+            .view
+            .paragraph_starts
+            .iter()
+            .rev()
+            .nth(1)
+            .copied()
+            .expect("chapter one has text paragraphs");
+        app.scroll = app.view.tops[last_text];
+        assert_eq!(
+            app.chapter_paragraph_offsets[1],
+            app.view.paragraph_starts.len()
+        );
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut runs = Vec::new();
+        let mut previous = None;
+        for y in 0..buffer.area.height.saturating_sub(1) {
+            let cell = &buffer[(0, y)];
+            if cell.symbol() != "\u{2502}" {
+                continue;
+            }
+            let color = cell.fg;
+            if previous != Some(color) {
+                runs.push(color);
+            }
+            previous = Some(color);
+        }
+        assert!(runs.len() >= 5, "expected paragraphs from both chapters");
+        for pair in runs.windows(2) {
+            assert_ne!(
+                pair[0], pair[1],
+                "neighboring paragraphs share a color"
+            );
+            let index = |color| {
+                app.palette
+                    .markers
+                    .iter()
+                    .position(|marker| *marker == color)
+                    .expect("bar color is a marker color")
+            };
+            assert_eq!(index(pair[1]), (index(pair[0]) + 1) % 5);
+        }
+    }
+
+    #[test]
     fn space_moves_to_the_next_paragraph() {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);
@@ -2844,12 +3006,14 @@ mod tests {
         screen(&mut app);
 
         press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('p'));
         press(&mut app, KeyCode::Char('S'));
 
         assert!(screen(&mut app).contains("settings saved to"));
         let written = std::fs::read_to_string(&config_path).unwrap();
         assert!(written.contains("# keep"));
         assert!(written.contains("images = false"));
+        assert!(written.contains("paragraph_colors = true"));
     }
 
     #[test]
@@ -2868,6 +3032,7 @@ mod tests {
             "bookmarks",
             "reading time",
             "save settings",
+            "toggle paragraph colors",
             "wheel, click popups",
         ] {
             assert!(text.contains(needle), "help is missing {needle}");
