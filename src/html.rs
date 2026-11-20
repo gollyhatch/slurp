@@ -137,6 +137,18 @@ struct Parser {
     link_label: String,
     link_block: usize,
     links: Vec<Link>,
+    open: Vec<OpenElement>,
+}
+
+/// One open element and the inline style it added.
+///
+/// The stack pairs start and end tags, so a style stops at its own end tag
+/// even when elements of the same name are nested.
+#[derive(Debug, Clone)]
+struct OpenElement {
+    name: String,
+    italic: bool,
+    bold: bool,
 }
 
 impl Parser {
@@ -150,6 +162,19 @@ impl Parser {
                 }
             }
         }
+
+        let (style_italic, style_bold) = inline_style(attrs);
+        if style_italic {
+            self.italic += 1;
+        }
+        if style_bold {
+            self.bold += 1;
+        }
+        self.open.push(OpenElement {
+            name: name.to_string(),
+            italic: style_italic,
+            bold: style_bold,
+        });
 
         match name {
             "script" | "style" | "rt" | "rp" => self.skip += 1,
@@ -251,13 +276,28 @@ impl Parser {
                 }
             }
             "b" | "strong" => self.bold += 1,
-            "i" | "em" => self.italic += 1,
+            "i" | "em" | "cite" | "dfn" | "var" => self.italic += 1,
             "code" | "tt" | "kbd" | "samp" => self.code += 1,
             _ => {}
         }
     }
 
     fn end(&mut self, name: &str) {
+        if let Some(position) =
+            self.open.iter().rposition(|entry| entry.name == name)
+        {
+            // Unclosed children end here as well, as in HTML.
+            while self.open.len() > position {
+                let entry = self.open.pop().expect("stack is not empty");
+                if entry.italic {
+                    self.italic = self.italic.saturating_sub(1);
+                }
+                if entry.bold {
+                    self.bold = self.bold.saturating_sub(1);
+                }
+            }
+        }
+
         match name {
             "script" | "style" | "rt" | "rp" => {
                 self.skip = self.skip.saturating_sub(1)
@@ -304,7 +344,9 @@ impl Parser {
             }
             "a" => self.finish_link(),
             "b" | "strong" => self.bold = self.bold.saturating_sub(1),
-            "i" | "em" => self.italic = self.italic.saturating_sub(1),
+            "i" | "em" | "cite" | "dfn" | "var" => {
+                self.italic = self.italic.saturating_sub(1)
+            }
             "code" | "tt" | "kbd" | "samp" => {
                 self.code = self.code.saturating_sub(1)
             }
@@ -502,6 +544,43 @@ pub fn parse(xhtml: &str) -> ParsedHtml {
     parser.finish()
 }
 
+/// Read the italic and bold flags from an inline `style` attribute.
+///
+/// Converted EPUBs often write `<span style="font-style: italic">` instead of
+/// `<em>`, so the two properties are honored here.
+fn inline_style(attrs: &HashMap<String, String>) -> (bool, bool) {
+    let Some(style) = attrs.get("style") else {
+        return (false, false);
+    };
+    let mut italic = false;
+    let mut bold = false;
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let property = property.trim().to_ascii_lowercase();
+        let value = value
+            .trim()
+            .trim_end_matches("!important")
+            .trim()
+            .to_ascii_lowercase();
+        match property.as_str() {
+            "font-style" => {
+                italic = matches!(value.as_str(), "italic" | "oblique")
+            }
+            "font-weight" => {
+                bold = matches!(value.as_str(), "bold" | "bolder")
+                    || value
+                        .parse::<u16>()
+                        .map(|weight| weight >= 600)
+                        .unwrap_or(false)
+            }
+            _ => {}
+        }
+    }
+    (italic, bold)
+}
+
 fn attributes(event: &BytesStart<'_>) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for attr in event.attributes().flatten() {
@@ -585,6 +664,150 @@ mod tests {
             <hr/>
           </body>
         </html>"#
+    }
+
+    #[test]
+    fn marks_italic_text() {
+        let html = r#"<html><body>
+            <p><em>em</em> <i>i</i> <cite>cite</cite> <dfn>dfn</dfn> <var>var</var></p>
+            <p><span style="font-style: italic">style</span> and <span style="font-style:italic; font-weight: 700">both</span></p>
+            <p><span style="font-style: oblique">oblique</span> and <span style="color: red">plain</span></p>
+            <h2><em>heading</em></h2>
+        </body></html>"#;
+        let parsed = parse(html);
+
+        let inline = |text: &str| {
+            parsed
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(content) => Some(content),
+                    _ => None,
+                })
+                .flatten()
+                .find(|inline| inline.text == text)
+                .unwrap_or_else(|| panic!("no run {text}"))
+                .flags
+        };
+
+        for text in ["em", "i", "cite", "dfn", "var", "style", "oblique"] {
+            assert!(inline(text).italic, "{text} must be italic");
+        }
+        let both = inline("both");
+        assert!(both.italic && both.bold);
+        let plain = parsed
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(content) => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .find(|inline| inline.text.contains("plain"))
+            .expect("a run with the plain word")
+            .flags;
+        assert!(!plain.italic);
+        assert!(!plain.bold);
+
+        let heading = parsed
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Heading { content, .. } => Some(content),
+                _ => None,
+            })
+            .expect("a heading block");
+        assert!(
+            heading
+                .iter()
+                .find(|run| run.text == "heading")
+                .expect("heading text")
+                .flags
+                .italic
+        );
+    }
+
+    #[test]
+    fn keeps_italic_inside_its_element() {
+        let html = r#"<html><body>
+            <p>before <span style="font-style: italic">inside</span> after</p>
+            <p style="font-style: italic">whole paragraph</p>
+            <p>next paragraph</p>
+        </body></html>"#;
+        let parsed = parse(html);
+
+        let paragraphs: Vec<Vec<Inline>> = parsed
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(content) => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let first = plain_text(&paragraphs[0]);
+        assert_eq!(first, "before inside after");
+        assert!(
+            !paragraphs[0]
+                .iter()
+                .find(|run| run.text == "before ")
+                .unwrap()
+                .flags
+                .italic
+        );
+        assert!(
+            paragraphs[0]
+                .iter()
+                .find(|run| run.text == "inside")
+                .unwrap()
+                .flags
+                .italic
+        );
+        assert!(
+            !paragraphs[0]
+                .iter()
+                .find(|run| run.text.contains("after"))
+                .unwrap()
+                .flags
+                .italic
+        );
+
+        assert!(paragraphs[1].iter().all(|run| run.flags.italic));
+        assert!(paragraphs[2].iter().all(|run| !run.flags.italic));
+    }
+
+    #[test]
+    fn keeps_style_scope_across_nested_same_elements() {
+        let html = r#"<html><body>
+            <p><span style="font-style: italic">outer <span>inner</span> after</span> plain</p>
+            <p style="font-style: italic">one <span>two</p><p>three</p>
+        </body></html>"#;
+        let parsed = parse(html);
+
+        let paragraphs: Vec<Vec<Inline>> = parsed
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(content) => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(plain_text(&paragraphs[0]), "outer inner after plain");
+        let slanted = paragraphs[0]
+            .iter()
+            .find(|run| run.text.contains("outer"))
+            .expect("italic run");
+        assert_eq!(slanted.text, "outer inner after");
+        assert!(slanted.flags.italic);
+        let upright = paragraphs[0]
+            .iter()
+            .find(|run| run.text.contains("plain"))
+            .expect("upright run");
+        assert!(!upright.flags.italic);
+
+        assert!(paragraphs[1].iter().all(|run| run.flags.italic));
+        assert!(paragraphs[2].iter().all(|run| !run.flags.italic));
     }
 
     #[test]

@@ -961,6 +961,50 @@ mod tests {
     }
 
     #[test]
+    fn renders_italic_text() {
+        let inlines = vec![
+            Inline {
+                text: "plain ".into(),
+                flags: InlineFlags::default(),
+            },
+            Inline {
+                text: "slanted".into(),
+                flags: InlineFlags {
+                    italic: true,
+                    ..InlineFlags::default()
+                },
+            },
+            Inline {
+                text: " linked".into(),
+                flags: InlineFlags {
+                    italic: true,
+                    link: true,
+                    ..InlineFlags::default()
+                },
+            },
+        ];
+        let chars = inline_chars(
+            &inlines,
+            Style::default(),
+            Style::default(),
+            ratatui::style::Color::Cyan,
+        );
+
+        let slanted: String = chars
+            .iter()
+            .filter(|c| c.style.add_modifier.contains(Modifier::ITALIC))
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(slanted, "slanted linked");
+
+        let linked = chars.last().expect("last character");
+        assert!(linked.style.add_modifier.contains(Modifier::ITALIC));
+        assert!(linked.style.add_modifier.contains(Modifier::UNDERLINED));
+        let plain = chars.first().expect("first character");
+        assert!(!plain.style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
     fn underlines_link_text() {
         let chapter = Chapter {
             href: "ch1.xhtml".into(),
