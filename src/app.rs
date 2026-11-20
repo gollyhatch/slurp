@@ -420,9 +420,16 @@ impl App {
 
     /// Draw the reader.
     pub fn draw(&mut self, frame: &mut Frame) {
-        self.ensure_size(frame.area());
-
         let area = frame.area();
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let [body, status_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+                .areas(area);
+        let body_area = self.inset_body(body);
+        self.ensure_size(body_area);
+
         if let Some((_, top, rows)) = self.view.item_at_row(self.scroll) {
             if rows > 1 && top < self.scroll {
                 self.scroll = top;
@@ -432,13 +439,6 @@ impl App {
             Block::new().style(Style::default().bg(self.palette.background)),
             area,
         );
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-
-        let [body_area, status_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
-                .areas(area);
 
         self.draw_body(frame, body_area);
         self.draw_footer(frame, status_area);
@@ -1476,12 +1476,27 @@ impl App {
             .min(area.width.max(1))
     }
 
+    /// Inset the body by the configured top and bottom margins, keeping at
+    /// least one row for text.
+    fn inset_body(&self, area: Rect) -> Rect {
+        let top = self.config.top_margin.min(area.height.saturating_sub(1));
+        let bottom = self
+            .config
+            .bottom_margin
+            .min(area.height.saturating_sub(top).saturating_sub(1));
+        Rect {
+            y: area.y.saturating_add(top),
+            height: area.height.saturating_sub(top).saturating_sub(bottom),
+            ..area
+        }
+    }
+
     fn ensure_size(&mut self, area: Rect) {
         if area.width == 0 || area.height == 0 {
             return;
         }
         let content = self.content_width_for(area);
-        let viewport = area.height.saturating_sub(1).max(1);
+        let viewport = area.height.max(1);
         if !self.laid_out
             || content != self.content_width
             || viewport != self.viewport_rows
@@ -2637,6 +2652,56 @@ mod tests {
             .any(|item| matches!(item, layout::Item::Image { .. })));
         let text = screen(&mut app);
         assert!(text.contains("images off"));
+    }
+
+    #[test]
+    fn vertical_margins_are_blank() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        assert!(row(0).trim().is_empty());
+        assert!(!row(1).trim().is_empty());
+        assert!(row(28).trim().is_empty());
+    }
+
+    #[test]
+    fn custom_vertical_margins_shift_the_text() {
+        let fixture = crate::testutil::sample_book();
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            top_margin: 3,
+            bottom_margin: 2,
+            ..Config::default()
+        };
+        let mut app = App::new(
+            &fixture.path,
+            config,
+            Picker::halfblocks(),
+            directory.path().join("positions.toml"),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        };
+        for blank in 0..3 {
+            assert!(row(blank).trim().is_empty(), "row {blank} is not blank");
+        }
+        assert!(!row(3).trim().is_empty());
+        for blank in 27..=28 {
+            assert!(row(blank).trim().is_empty(), "row {blank} is not blank");
+        }
     }
 
     #[test]

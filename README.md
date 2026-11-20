@@ -126,6 +126,12 @@ text_width = 80
 # Minimum empty cells on each side of the text column.
 margin = 2
 
+# Empty rows above the text.
+top_margin = 1
+
+# Empty rows between the text and the status line.
+bottom_margin = 1
+
 # Empty rows between paragraphs.
 paragraph_spacing = 1
 

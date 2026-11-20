@@ -51,6 +51,8 @@ Configuration:
   theme = \"catppuccin-mocha\"
   text_width = 80
   margin = 2
+  top_margin = 1
+  bottom_margin = 1
   paragraph_spacing = 1
   image_max_height = 20
   images = true

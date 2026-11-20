@@ -20,6 +20,10 @@ pub struct Config {
     pub text_width: u16,
     /// Minimum empty cells between the text column and the terminal edge.
     pub margin: u16,
+    /// Empty rows above the text.
+    pub top_margin: u16,
+    /// Empty rows between the text and the status line.
+    pub bottom_margin: u16,
     /// Empty rows between text blocks.
     pub paragraph_spacing: u16,
     /// Maximum height of an inline image in rows.
@@ -48,6 +52,8 @@ impl Default for Config {
             theme: DEFAULT_THEME.to_string(),
             text_width: 80,
             margin: 2,
+            top_margin: 1,
+            bottom_margin: 1,
             paragraph_spacing: 1,
             image_max_height: 20,
             images: true,
@@ -143,6 +149,12 @@ impl Config {
         if self.margin > 20 {
             bail!("margin must be at most 20");
         }
+        if self.top_margin > 20 {
+            bail!("top_margin must be at most 20");
+        }
+        if self.bottom_margin > 20 {
+            bail!("bottom_margin must be at most 20");
+        }
         if self.paragraph_spacing > 4 {
             bail!("paragraph_spacing must be at most 4");
         }
@@ -183,6 +195,8 @@ mod tests {
             theme = "catppuccin-mocha"
             text_width = 100
             margin = 4
+            top_margin = 2
+            bottom_margin = 0
             paragraph_spacing = 0
             image_max_height = 12
             images = false
@@ -199,6 +213,8 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.theme, "catppuccin-mocha");
         assert_eq!(config.text_width, 100);
+        assert_eq!(config.top_margin, 2);
+        assert_eq!(config.bottom_margin, 0);
         assert!(!config.images);
         assert_eq!(config.auto_scroll_wpm, 300);
         assert_eq!(config.reading_wpm, 320);
@@ -242,6 +258,13 @@ mod tests {
     fn save_runtime_needs_a_path() {
         let config = Config::default();
         assert!(config.save_runtime().is_err());
+    }
+
+    #[test]
+    fn vertical_margins_default_to_one_line() {
+        let config = Config::default();
+        assert_eq!(config.top_margin, 1);
+        assert_eq!(config.bottom_margin, 1);
     }
 
     #[test]
