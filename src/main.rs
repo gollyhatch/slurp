@@ -45,6 +45,8 @@ Keys:
   Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
+Recent books: j/k select; Enter open; x remove; q quit
+
 Configuration:
   ~/.config/slurp/config.toml
 
@@ -143,7 +145,11 @@ fn show_library(
     state_path: PathBuf,
 ) -> Result<()> {
     let (_theme, palette) = theme::load(&config.theme, &config.colors)?;
-    let mut library = Library::new(Store::load(&state_path), palette);
+    let mut library = Library::new(
+        Store::load(&state_path),
+        palette,
+        state_path.clone(),
+    );
     loop {
         terminal.draw(|frame| library.draw(frame))?;
         if !event::poll(Duration::from_millis(250))? {

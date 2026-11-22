@@ -86,6 +86,13 @@ impl Store {
         self.prune();
     }
 
+    /// Remove the position for a path. Returns `true` when it was present.
+    pub fn remove(&mut self, path: &str) -> bool {
+        let before = self.books.len();
+        self.books.retain(|position| position.path != path);
+        self.books.len() != before
+    }
+
     /// Write the store atomically.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -133,6 +140,18 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removes_a_position() {
+        let mut store = Store::default();
+        store.books.push(BookPosition {
+            path: "/books/a.epub".into(),
+            ..Default::default()
+        });
+        assert!(store.remove("/books/a.epub"));
+        assert!(store.books.is_empty());
+        assert!(!store.remove("/books/a.epub"));
+    }
 
     #[test]
     fn round_trips_positions() {

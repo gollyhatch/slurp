@@ -1,6 +1,6 @@
 //! Recent book list shown when no book is given.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -24,7 +24,8 @@ pub enum LibraryAction {
 
 /// The recent book list.
 pub struct Library {
-    books: Vec<BookPosition>,
+    store: Store,
+    state_path: PathBuf,
     selected: usize,
     offset: usize,
     message: Option<String>,
@@ -33,11 +34,15 @@ pub struct Library {
 
 impl Library {
     /// Build the list from the stored positions, newest first.
-    pub fn new(store: Store, palette: Palette) -> Self {
-        let mut books = store.books;
-        books.sort_by_key(|book| std::cmp::Reverse(book.updated));
+    pub fn new(
+        mut store: Store,
+        palette: Palette,
+        state_path: PathBuf,
+    ) -> Self {
+        store.books.sort_by_key(|book| std::cmp::Reverse(book.updated));
         Self {
-            books,
+            store,
+            state_path,
             selected: 0,
             offset: 0,
             message: None,
@@ -47,7 +52,10 @@ impl Library {
 
     /// Path of the selected book.
     pub fn selected_path(&self) -> Option<&str> {
-        self.books.get(self.selected).map(|book| book.path.as_str())
+        self.store
+            .books
+            .get(self.selected)
+            .map(|book| book.path.as_str())
     }
 
     /// Show a message in place of the hint row.
@@ -57,7 +65,7 @@ impl Library {
 
     /// Handle one key press.
     pub fn handle_key(&mut self, key: KeyEvent) -> LibraryAction {
-        let last = self.books.len().saturating_sub(1);
+        let last = self.store.books.len().saturating_sub(1);
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => LibraryAction::Quit,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -84,11 +92,38 @@ impl Library {
                 self.selected = last;
                 LibraryAction::None
             }
-            KeyCode::Enter if !self.books.is_empty() => {
+            KeyCode::Enter if !self.store.books.is_empty() => {
                 LibraryAction::Open(self.selected)
+            }
+            KeyCode::Char('x') if !self.store.books.is_empty() => {
+                self.remove_selected();
+                LibraryAction::None
             }
             _ => LibraryAction::None,
         }
+    }
+
+    /// Remove the selected book from the list and the saved positions.
+    fn remove_selected(&mut self) {
+        let Some(book) = self.store.books.get(self.selected).cloned() else {
+            return;
+        };
+        let label = if book.title.is_empty() {
+            book.path.clone()
+        } else {
+            book.title.clone()
+        };
+        let mut store = self.store.clone();
+        store.remove(&book.path);
+        if let Err(error) = store.save(&self.state_path) {
+            self.message = Some(format!("cannot remove: {error:#}"));
+            return;
+        }
+        self.store = store;
+        let last = self.store.books.len().saturating_sub(1);
+        self.selected = self.selected.min(last);
+        self.offset = self.offset.min(last);
+        self.message = Some(format!("removed {label}"));
     }
 
     /// Draw the list over the whole screen.
@@ -119,14 +154,14 @@ impl Library {
         }
 
         let mut lines: Vec<Line> = Vec::new();
-        if self.books.is_empty() {
+        if self.store.books.is_empty() {
             lines.push(Line::styled(
                 " No recent books. Run: slurp BOOK.epub",
                 self.palette.muted(),
             ));
         } else {
             for index in self.offset..self.offset.saturating_add(rows) {
-                let Some(book) = self.books.get(index) else {
+                let Some(book) = self.store.books.get(index) else {
                     break;
                 };
                 lines.push(self.row(book, index == self.selected, list_area));
@@ -139,7 +174,10 @@ impl Library {
                 format!(" {message}"),
                 self.palette.base().fg(self.palette.search),
             ),
-            None => (" enter open   q quit ".to_string(), self.palette.muted()),
+            None => (
+                " enter open   x remove   q quit ".to_string(),
+                self.palette.muted(),
+            ),
         };
         frame.render_widget(
             Paragraph::new(Line::styled(hint, style)),
@@ -241,6 +279,10 @@ mod tests {
             .1
     }
 
+    fn state_path() -> PathBuf {
+        PathBuf::from("/nonexistent/slurp/positions.toml")
+    }
+
     fn press(library: &mut Library, code: KeyCode) -> LibraryAction {
         library.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -251,7 +293,7 @@ mod tests {
         store.books.push(position("/a.epub", "Oldest", 1));
         store.books.push(position("/b.epub", "Newest", 9));
         store.books.push(position("/c.epub", "Middle", 5));
-        let mut library = Library::new(store, palette());
+        let mut library = Library::new(store, palette(), state_path());
 
         assert_eq!(library.selected_path(), Some("/b.epub"));
         let text = screen(&mut library);
@@ -278,7 +320,7 @@ mod tests {
             .push(position("/definitely/missing.epub", "Gone", 1));
         store.books.push(position("/tmp", "Present", 9));
         let palette = palette();
-        let mut library = Library::new(store, palette.clone());
+        let mut library = Library::new(store, palette.clone(), state_path());
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -301,7 +343,7 @@ mod tests {
         let mut store = Store::default();
         store.books.push(position("/a.epub", "Only", 1));
         let palette = palette();
-        let mut library = Library::new(store, palette.clone());
+        let mut library = Library::new(store, palette.clone(), state_path());
 
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -326,7 +368,7 @@ mod tests {
         book.chapters = 4;
         book.book_progress = 0.375;
         store.books.push(book);
-        let mut library = Library::new(store, palette());
+        let mut library = Library::new(store, palette(), state_path());
 
         let text = screen(&mut library);
         assert!(text.contains("Chapter 2  50%  Book 38%"), "row was {text}");
@@ -336,7 +378,7 @@ mod tests {
     fn hides_book_progress_for_old_entries() {
         let mut store = Store::default();
         store.books.push(position("/tmp", "Old", 1));
-        let mut library = Library::new(store, palette());
+        let mut library = Library::new(store, palette(), state_path());
 
         let text = screen(&mut library);
         assert!(text.contains("Chapter 2  50%"));
@@ -344,9 +386,55 @@ mod tests {
     }
 
     #[test]
+    fn removes_the_selected_book_and_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("positions.toml");
+        let mut store = Store::default();
+        store.books.push(position("/a.epub", "Alpha", 1));
+        store.books.push(position("/b.epub", "Beta", 9));
+        store.save(&path).unwrap();
+
+        let mut library =
+            Library::new(Store::load(&path), palette(), path.clone());
+        assert_eq!(library.selected_path(), Some("/b.epub"));
+        assert_eq!(
+            press(&mut library, KeyCode::Char('x')),
+            LibraryAction::None
+        );
+        assert_eq!(library.selected_path(), Some("/a.epub"));
+        assert!(screen(&mut library).contains("removed Beta"));
+        let saved = Store::load(&path);
+        assert!(saved.get("/b.epub").is_none());
+        assert!(saved.get("/a.epub").is_some());
+
+        press(&mut library, KeyCode::Char('x'));
+        assert_eq!(library.selected_path(), None);
+        assert!(screen(&mut library).contains("No recent books"));
+        assert!(Store::load(&path).books.is_empty());
+    }
+
+    #[test]
+    fn keeps_the_book_when_removal_cannot_be_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocker = directory.path().join("blocker");
+        std::fs::write(&blocker, "").unwrap();
+        let path = blocker.join("positions.toml");
+        let mut store = Store::default();
+        store.books.push(position("/a.epub", "Alpha", 1));
+        let mut library = Library::new(store, palette(), path);
+        press(&mut library, KeyCode::Char('x'));
+        assert_eq!(library.selected_path(), Some("/a.epub"));
+        assert!(screen(&mut library).contains("cannot remove"));
+    }
+
+    #[test]
     fn shows_the_empty_hint_and_ignores_enter() {
         let palette = palette();
-        let mut library = Library::new(Store::default(), palette.clone());
+        let mut library = Library::new(
+            Store::default(),
+            palette.clone(),
+            state_path(),
+        );
         assert_eq!(library.selected_path(), None);
         assert_eq!(press(&mut library, KeyCode::Enter), LibraryAction::None);
 
@@ -358,6 +446,7 @@ mod tests {
             buffer.content().iter().map(|cell| cell.symbol()).collect();
         assert!(text.contains("No recent books"));
         assert!(text.contains("Recent books"));
+        assert!(text.contains("x remove"));
         assert_eq!(buffer[(2, 1)].fg, palette.muted);
         let hint = buffer[(1, 18)].clone();
         assert_eq!(hint.fg, palette.muted);
