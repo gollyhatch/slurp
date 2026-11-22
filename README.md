@@ -61,7 +61,8 @@ All screenshots use the built-in `ayu-dark` theme.
 - Shows the time left for the chapter and the book, in the status line and in
   a popup on `s`.
 - Runs without a book and opens a recent-books list with chapter and
-  whole-book progress. `x` removes the selected book and its saved position.
+  whole-book progress. `x` removes the selected book and its saved position,
+  `c` removes every entry whose file is missing.
 - Saves theme, width, and mode changes back to the config file with `S`,
   keeping comments and unrelated keys.
 - Uses the 39 built-in [opaline](https://crates.io/crates/opaline) themes.

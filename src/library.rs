@@ -99,8 +99,38 @@ impl Library {
                 self.remove_selected();
                 LibraryAction::None
             }
+            KeyCode::Char('c') => {
+                self.clean_missing();
+                LibraryAction::None
+            }
             _ => LibraryAction::None,
         }
+    }
+
+    /// Remove every book whose file is gone.
+    fn clean_missing(&mut self) {
+        let missing: Vec<String> = self
+            .store
+            .books
+            .iter()
+            .filter(|book| !Path::new(&book.path).exists())
+            .map(|book| book.path.clone())
+            .collect();
+        if missing.is_empty() {
+            self.message = Some("no missing books".to_string());
+            return;
+        }
+        let count = missing.len();
+        let mut store = self.store.clone();
+        for path in &missing {
+            store.remove(path);
+        }
+        let message = if count == 1 {
+            "removed 1 missing book".to_string()
+        } else {
+            format!("removed {count} missing books")
+        };
+        self.apply_removal(store, message);
     }
 
     /// Remove the selected book from the list and the saved positions.
@@ -115,6 +145,11 @@ impl Library {
         };
         let mut store = self.store.clone();
         store.remove(&book.path);
+        self.apply_removal(store, format!("removed {label}"));
+    }
+
+    /// Save the reduced store and show the outcome in the hint row.
+    fn apply_removal(&mut self, store: Store, message: String) {
         if let Err(error) = store.save(&self.state_path) {
             self.message = Some(format!("cannot remove: {error:#}"));
             return;
@@ -123,7 +158,7 @@ impl Library {
         let last = self.store.books.len().saturating_sub(1);
         self.selected = self.selected.min(last);
         self.offset = self.offset.min(last);
-        self.message = Some(format!("removed {label}"));
+        self.message = Some(message);
     }
 
     /// Draw the list over the whole screen.
@@ -175,7 +210,8 @@ impl Library {
                 self.palette.base().fg(self.palette.search),
             ),
             None => (
-                " enter open   x remove   q quit ".to_string(),
+                " enter open   x remove   c clean missing   q quit "
+                    .to_string(),
                 self.palette.muted(),
             ),
         };
@@ -428,6 +464,48 @@ mod tests {
     }
 
     #[test]
+    fn cleans_out_missing_books() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("positions.toml");
+        let present = directory.path().join("present.epub");
+        std::fs::write(&present, "").unwrap();
+        let present = present.to_string_lossy().into_owned();
+        let mut store = Store::default();
+        store.books.push(position(&present, "Present", 9));
+        store
+            .books
+            .push(position("/definitely/missing-one.epub", "Gone One", 8));
+        store
+            .books
+            .push(position("/definitely/missing-two.epub", "Gone Two", 7));
+        store.save(&path).unwrap();
+
+        let mut library =
+            Library::new(Store::load(&path), palette(), path.clone());
+        press(&mut library, KeyCode::Char('c'));
+        assert_eq!(library.selected_path(), Some(present.as_str()));
+        assert!(screen(&mut library).contains("removed 2 missing books"));
+        let saved = Store::load(&path);
+        assert_eq!(saved.books.len(), 1);
+        assert!(saved.get(&present).is_some());
+        assert!(saved.get("/definitely/missing-one.epub").is_none());
+    }
+
+    #[test]
+    fn reports_when_nothing_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let present = directory.path().join("present.epub");
+        std::fs::write(&present, "").unwrap();
+        let present = present.to_string_lossy().into_owned();
+        let mut store = Store::default();
+        store.books.push(position(&present, "Present", 1));
+        let mut library = Library::new(store, palette(), state_path());
+        press(&mut library, KeyCode::Char('c'));
+        assert_eq!(library.selected_path(), Some(present.as_str()));
+        assert!(screen(&mut library).contains("no missing books"));
+    }
+
+    #[test]
     fn shows_the_empty_hint_and_ignores_enter() {
         let palette = palette();
         let mut library = Library::new(
@@ -447,6 +525,7 @@ mod tests {
         assert!(text.contains("No recent books"));
         assert!(text.contains("Recent books"));
         assert!(text.contains("x remove"));
+        assert!(text.contains("c clean missing"));
         assert_eq!(buffer[(2, 1)].fg, palette.muted);
         let hint = buffer[(1, 18)].clone();
         assert_eq!(hint.fg, palette.muted);

@@ -45,7 +45,7 @@ Keys:
   Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
-Recent books: j/k select; Enter open; x remove; q quit
+Recent books: j/k select; Enter open; x remove; c clean missing; q quit
 
 Configuration:
   ~/.config/slurp/config.toml
