@@ -67,7 +67,8 @@ text.*
   a popup on `s`.
 - Runs without a book and opens a recent-books list with chapter and
   whole-book progress. `x` removes the selected book and its saved position,
-  `c` removes every entry whose file is missing.
+  `c` removes every entry whose file is missing. `--resume` skips the list and
+  opens the most recently read book.
 - Optional KOSync and CrossPoint Sync progress synchronization across
   devices.
 - Saves theme, width, and mode changes back to the config file with `S`,
@@ -247,12 +248,14 @@ element.
 ```
 slurp [OPTIONS] [BOOK.epub]
 
-Without a book, slurp opens the recent-books list.
+Without a book, slurp opens the recent-books list. `--resume` opens the most
+recently read book instead.
 
   -c, --config <FILE>   Use a specific config file
       --state <FILE>    Use a specific reading position file
   -t, --theme <NAME>    Start with a built-in theme
   -w, --width <COLS>    Set the text column width
+  -r, --resume          Open the most recently read book
       --list-themes     List the built-in themes
   -h, --help            Show help
   -V, --version         Show the version

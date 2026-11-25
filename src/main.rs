@@ -22,13 +22,15 @@ slurp - a terminal EPUB reader
 Usage:
   slurp [OPTIONS] [BOOK.epub]
 
-Without a book, slurp opens the recent-books list.
+Without a book, slurp opens the recent-books list. With --resume, it opens the
+most recently read book instead.
 
 Options:
   -c, --config <FILE>   Use a specific config file
       --state <FILE>    Use a specific reading position file
   -t, --theme <NAME>    Start with a built-in theme
   -w, --width <COLS>    Set the text column width
+  -r, --resume          Open the most recently read book
       --list-themes     List the built-in themes
   -h, --help            Show this help
   -V, --version         Show the version
@@ -86,6 +88,7 @@ struct Args {
     state: Option<PathBuf>,
     theme: Option<String>,
     width: Option<u16>,
+    resume: bool,
     list_themes: bool,
     help: bool,
     version: bool,
@@ -119,7 +122,14 @@ fn main() -> Result<()> {
     config.validate()?;
 
     let state_path = args.state.clone().unwrap_or_else(state::default_path);
-    let book = args.book.clone();
+    if args.resume && args.book.is_some() {
+        bail!("--resume cannot be combined with a book");
+    }
+    let book = if args.resume {
+        Some(resume_book(&state_path)?)
+    } else {
+        args.book.clone()
+    };
 
     let mut terminal =
         ratatui::try_init().context("cannot initialize the terminal")?;
@@ -129,6 +139,19 @@ fn main() -> Result<()> {
     let _ = execute!(stdout(), DisableMouseCapture);
     let _ = ratatui::try_restore();
     result
+}
+
+/// Path of the most recently read book.
+fn resume_book(state_path: &Path) -> Result<PathBuf> {
+    let store = Store::load(state_path);
+    let position = store
+        .most_recent()
+        .context("no recent books to resume")?;
+    let path = PathBuf::from(&position.path);
+    if !path.exists() {
+        bail!("cannot resume {}: file is missing", path.display());
+    }
+    Ok(path)
 }
 
 /// Run the reader or the recent book list, then return to the shell.
@@ -220,6 +243,7 @@ fn parse_args() -> Result<Args> {
         match argument.as_str() {
             "-h" | "--help" => args.help = true,
             "-V" | "--version" => args.version = true,
+            "-r" | "--resume" => args.resume = true,
             "--list-themes" => args.list_themes = true,
             "-c" | "--config" => {
                 args.config = Some(PathBuf::from(
@@ -345,4 +369,58 @@ fn cell_size() -> ratatui_image::FontSize {
         }
     }
     FontSize::new(10, 20)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slurp::state::BookPosition;
+
+    fn position(path: &Path, updated: u64) -> BookPosition {
+        BookPosition {
+            path: path.to_string_lossy().into_owned(),
+            updated,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resumes_the_most_recent_book() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("positions.toml");
+        let older = directory.path().join("older.epub");
+        let newer = directory.path().join("newer.epub");
+        std::fs::write(&older, "").unwrap();
+        std::fs::write(&newer, "").unwrap();
+        let mut store = Store::default();
+        store.books.push(position(&older, 10));
+        store.books.push(position(&newer, 20));
+        store.save(&state_path).unwrap();
+
+        assert_eq!(resume_book(&state_path).unwrap(), newer);
+    }
+
+    #[test]
+    fn refuses_to_resume_without_recent_books() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = resume_book(&directory.path().join("positions.toml"))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("no recent books"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn refuses_to_resume_a_missing_book() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("positions.toml");
+        let mut store = Store::default();
+        store
+            .books
+            .push(position(&directory.path().join("gone.epub"), 10));
+        store.save(&state_path).unwrap();
+        let error = resume_book(&state_path).unwrap_err();
+        assert!(error.to_string().contains("missing"), "{error:#}");
+    }
 }

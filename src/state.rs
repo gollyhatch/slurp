@@ -86,6 +86,11 @@ impl Store {
         self.prune();
     }
 
+    /// The position touched most recently.
+    pub fn most_recent(&self) -> Option<&BookPosition> {
+        self.books.iter().max_by_key(|position| position.updated)
+    }
+
     /// Remove the position for a path. Returns `true` when it was present.
     pub fn remove(&mut self, path: &str) -> bool {
         let before = self.books.len();
@@ -140,6 +145,31 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_most_recent_position() {
+        let mut store = Store::default();
+        assert!(store.most_recent().is_none());
+        store.books.push(BookPosition {
+            path: "/books/a.epub".into(),
+            updated: 10,
+            ..Default::default()
+        });
+        store.books.push(BookPosition {
+            path: "/books/b.epub".into(),
+            updated: 30,
+            ..Default::default()
+        });
+        store.books.push(BookPosition {
+            path: "/books/c.epub".into(),
+            updated: 20,
+            ..Default::default()
+        });
+        assert_eq!(
+            store.most_recent().map(|position| position.path.as_str()),
+            Some("/books/b.epub")
+        );
+    }
 
     #[test]
     fn removes_a_position() {
