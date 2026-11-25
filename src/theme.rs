@@ -80,7 +80,9 @@ pub const ROLES: &[Role] = &[
 pub struct Palette {
     pub text: Color,
     pub background: Color,
+    /// Headings and the primary accent, used for the paragraph bar.
     pub heading: Color,
+    /// Secondary accent, used for links and selections.
     pub accent: Color,
     pub muted: Color,
     pub search: Color,

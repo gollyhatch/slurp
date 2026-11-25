@@ -107,6 +107,24 @@ impl View {
         (position > 0).then_some(position - 1)
     }
 
+    /// First and last content rows of a paragraph.
+    pub fn paragraph_rows(&self, paragraph: usize) -> Option<(usize, usize)> {
+        let start = *self.paragraph_starts.get(paragraph)?;
+        let end = self
+            .paragraph_starts
+            .get(paragraph + 1)
+            .copied()
+            .unwrap_or(self.items.len());
+        let last = self.items[start..end]
+            .iter()
+            .rposition(|item| {
+                !matches!(item, Item::Line { plain, .. } if plain.is_empty())
+            })
+            .map(|offset| start + offset)
+            .unwrap_or(start);
+        Some((self.tops[start], self.tops[last] + self.rows(last)))
+    }
+
     /// Rows used by an item.
     pub fn rows(&self, index: usize) -> usize {
         self.tops[index + 1] - self.tops[index]
@@ -877,6 +895,12 @@ mod tests {
         assert_eq!(view.paragraph_of_item(0), Some(0));
         assert_eq!(view.paragraph_of_item(2), Some(1));
         assert_eq!(view.paragraph_of_item(5), Some(2));
+        for paragraph in 0..view.paragraph_starts.len() {
+            let (top, bottom) = view.paragraph_rows(paragraph).unwrap();
+            assert_eq!(top, view.tops[view.paragraph_starts[paragraph]]);
+            assert!(bottom > top);
+        }
+        assert_eq!(view.paragraph_rows(3), None);
 
         let highlighted = build(
             &chapter,

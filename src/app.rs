@@ -71,6 +71,8 @@ pub struct App {
     view_cache: HashMap<usize, View>,
     chapter: usize,
     scroll: usize,
+    /// Chapter and paragraph ordinal selected in by-paragraph mode.
+    selected_paragraph: Option<(usize, usize)>,
     content_width: u16,
     viewport_rows: u16,
     area: Rect,
@@ -108,6 +110,7 @@ pub struct App {
     sync_document: String,
     sync_ready: bool,
     pending_progress: Option<f32>,
+    pending_paragraph: Option<usize>,
     chapter_chars: Vec<usize>,
     total_chars: usize,
     chapter_words: Vec<usize>,
@@ -217,6 +220,7 @@ impl App {
             view_cache: HashMap::new(),
             chapter,
             scroll: 0,
+            selected_paragraph: None,
             laid_out: false,
             mode: Mode::Normal,
             input: String::new(),
@@ -249,7 +253,10 @@ impl App {
             sync,
             sync_document,
             sync_ready: false,
-            pending_progress: saved.map(|position| position.progress),
+            pending_progress: saved.as_ref().map(|position| position.progress),
+            pending_paragraph: saved
+                .as_ref()
+                .and_then(|position| position.paragraph),
             chapter_chars,
             total_chars,
             chapter_words,
@@ -301,7 +308,8 @@ impl App {
     /// Save the current position.
     pub fn save_position(&mut self) -> Result<()> {
         let progress = if self.view.total_rows > 0 {
-            (self.scroll as f32 / self.view.total_rows as f32).clamp(0.0, 1.0)
+            (self.progress_row() as f32 / self.view.total_rows as f32)
+                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -311,12 +319,29 @@ impl App {
             title: self.book.title.clone(),
             chapter: self.chapter,
             progress,
+            paragraph: if self.config.paragraph_mode {
+                self.current_paragraph()
+            } else {
+                None
+            },
             updated: state::now(),
             bookmarks: self.bookmarks.clone(),
             chapters: self.book.chapters.len(),
             book_progress,
         });
         self.state.save(&self.state_path)
+    }
+
+    /// Row that represents the current reading position.
+    fn progress_row(&self) -> usize {
+        if self.config.paragraph_mode {
+            if let Some(paragraph) = self.current_paragraph() {
+                if let Some((top, _)) = self.view.paragraph_rows(paragraph) {
+                    return top.min(self.view.total_rows.saturating_sub(1));
+                }
+            }
+        }
+        self.scroll
     }
 
     /// Reading progress in the whole book, from 0 to 1.
@@ -327,7 +352,8 @@ impl App {
         let before: usize = self.chapter_chars.iter().take(self.chapter).sum();
         let chars = self.chapter_chars.get(self.chapter).copied().unwrap_or(0);
         let local = if self.view.total_rows > 0 {
-            (self.scroll as f32 / self.view.total_rows as f32).clamp(0.0, 1.0)
+            (self.progress_row() as f32 / self.view.total_rows as f32)
+                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -415,6 +441,7 @@ impl App {
         let (chapter, progress) = self.locate_fraction(remote.percentage);
         self.chapter = chapter;
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.view_cache.clear();
         self.pending_progress = Some(progress);
         self.message = Some(remote_label(remote));
@@ -425,6 +452,7 @@ impl App {
         let (chapter, progress) = self.locate_fraction(remote.percentage);
         self.chapter = chapter.min(self.book.chapters.len().saturating_sub(1));
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.view_cache.clear();
         self.rebuild_view();
         let row = (progress * self.view.total_rows as f32).round() as usize;
@@ -671,17 +699,36 @@ impl App {
             }
             KeyCode::Tab => self.select_next_link(),
             KeyCode::Enter => self.follow_selected_link(),
-            KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.config.paragraph_mode {
+                    self.select_next_paragraph();
+                } else {
+                    self.scroll_by(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.config.paragraph_mode {
+                    self.select_previous_paragraph();
+                } else {
+                    self.scroll_by(-1);
+                }
+            }
             KeyCode::Char('d') => self.scroll_by(half),
             KeyCode::Char('u') => self.scroll_by(-half),
-            KeyCode::Char(' ') => self.next_paragraph(),
+            KeyCode::Char(' ') => {
+                if self.config.paragraph_mode {
+                    self.select_next_paragraph();
+                } else {
+                    self.next_paragraph();
+                }
+            }
             KeyCode::PageDown => self.scroll_by(page),
             KeyCode::Char('b') | KeyCode::PageUp => self.scroll_by(-page),
             KeyCode::Char('g') | KeyCode::Home => {
                 if self.config.continuous && self.chapter != 0 {
                     self.switch_chapter(0);
                 }
+                self.selected_paragraph = None;
                 self.scroll = 0;
             }
             KeyCode::Char('G') | KeyCode::End => {
@@ -691,6 +738,7 @@ impl App {
                         self.switch_chapter(last);
                     }
                 }
+                self.selected_paragraph = None;
                 self.scroll =
                     self.snap(self.max_scroll(), true).min(self.max_scroll());
             }
@@ -765,6 +813,8 @@ impl App {
                 ));
             }
             KeyCode::Char('r') => self.pull_latest(),
+            KeyCode::Char('P') => self.toggle_paragraph_mode(),
+            KeyCode::Char('z') => self.align_paragraph_to_top(),
             KeyCode::Char('a') => self.toggle_auto_scroll(),
             KeyCode::Char('[') => self.adjust_auto_scroll_speed(-25),
             KeyCode::Char(']') => self.adjust_auto_scroll_speed(25),
@@ -860,6 +910,7 @@ impl App {
         }
 
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.chapter = chapter;
         self.scroll = 0;
         self.rebuild_view();
@@ -882,7 +933,8 @@ impl App {
         let before: usize = self.chapter_chars.iter().take(self.chapter).sum();
         let chars = self.chapter_chars.get(self.chapter).copied().unwrap_or(0);
         let local = if self.view.total_rows > 0 {
-            (self.scroll as f32 / self.view.total_rows as f32).clamp(0.0, 1.0)
+            (self.progress_row() as f32 / self.view.total_rows as f32)
+                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -937,6 +989,7 @@ impl App {
                 }
                 self.chapter = chapter.min(self.book.chapters.len() - 1);
                 self.selected_link = None;
+                self.selected_paragraph = None;
                 self.rebuild_view();
                 if let Some(block) = block {
                     if let Some(item) =
@@ -965,6 +1018,7 @@ impl App {
         };
         self.chapter = chapter.min(self.book.chapters.len() - 1);
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.rebuild_view();
         self.scroll = scroll.min(self.scroll_limit());
         let _ = self.save_position();
@@ -1046,6 +1100,7 @@ impl App {
             return;
         }
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.chapter = index;
         self.scroll = 0;
         self.rebuild_view();
@@ -1173,7 +1228,161 @@ impl App {
         }
     }
 
+    /// Toggle the paragraph reading mode and select the visible paragraph.
+    fn toggle_paragraph_mode(&mut self) {
+        self.config.paragraph_mode = !self.config.paragraph_mode;
+        self.selected_paragraph = None;
+        if self.config.paragraph_mode {
+            self.ensure_paragraph_selection();
+        }
+        self.message = Some(format!(
+            "paragraph mode: {}",
+            if self.config.paragraph_mode { "on" } else { "off" }
+        ));
+    }
+
+    /// Selected paragraph ordinal in the current chapter.
+    fn current_paragraph(&self) -> Option<usize> {
+        match self.selected_paragraph {
+            Some((chapter, paragraph)) if chapter == self.chapter => {
+                Some(paragraph)
+            }
+            _ => None,
+        }
+    }
+
+    /// Keep a visible paragraph selected while the mode is active.
+    fn ensure_paragraph_selection(&mut self) {
+        if !self.config.paragraph_mode {
+            self.selected_paragraph = None;
+            return;
+        }
+        let count = self.view.paragraph_starts.len();
+        if count == 0 {
+            self.selected_paragraph = None;
+            return;
+        }
+        let page_bottom = self.scroll + usize::from(self.viewport_rows).max(1);
+        if let Some((chapter, paragraph)) = self.selected_paragraph {
+            if chapter == self.chapter && paragraph < count {
+                if let Some((top, bottom)) =
+                    self.view.paragraph_rows(paragraph)
+                {
+                    if top < page_bottom && bottom > self.scroll {
+                        return;
+                    }
+                }
+            }
+        }
+        self.selected_paragraph = None;
+        for paragraph in 0..count {
+            if let Some((top, bottom)) = self.view.paragraph_rows(paragraph) {
+                if top < page_bottom && bottom > self.scroll {
+                    self.selected_paragraph =
+                        Some((self.chapter, paragraph));
+                    return;
+                }
+            }
+        }
+        let next = (0..count)
+            .find(|&paragraph| {
+                self.view
+                    .paragraph_rows(paragraph)
+                    .map(|(top, _)| top >= page_bottom)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(count - 1);
+        self.selected_paragraph = Some((self.chapter, next));
+    }
+
+    /// Select the next paragraph, scrolling only when it leaves the page.
+    fn select_next_paragraph(&mut self) {
+        self.ensure_paragraph_selection();
+        let Some(current) = self.current_paragraph() else {
+            return;
+        };
+        let count = self.view.paragraph_starts.len();
+        if current + 1 >= count {
+            if self.config.continuous
+                && self.chapter + 1 < self.book.chapters.len()
+            {
+                self.switch_chapter(self.chapter + 1);
+                self.ensure_paragraph_selection();
+            }
+            return;
+        }
+        let next = current + 1;
+        let Some((next_top, next_bottom)) = self.view.paragraph_rows(next)
+        else {
+            return;
+        };
+        let page_bottom = self.scroll + usize::from(self.viewport_rows).max(1);
+        let last_on_page = (0..count).rev().find(|&paragraph| {
+            self.view
+                .paragraph_rows(paragraph)
+                .map(|(top, _)| top >= self.scroll && top < page_bottom)
+                .unwrap_or(false)
+        });
+        self.selected_paragraph = Some((self.chapter, next));
+        if next_top >= page_bottom
+            || (last_on_page == Some(next) && next_bottom > page_bottom)
+        {
+            self.scroll = next_top.min(self.scroll_limit());
+        }
+    }
+
+    /// Select the previous paragraph, scrolling it into view.
+    fn select_previous_paragraph(&mut self) {
+        self.ensure_paragraph_selection();
+        let Some(current) = self.current_paragraph() else {
+            return;
+        };
+        if current == 0 {
+            if self.config.continuous && self.chapter > 0 {
+                self.switch_chapter(self.chapter - 1);
+                let count = self.view.paragraph_starts.len();
+                if count > 0 {
+                    let last = count - 1;
+                    let top = self
+                        .view
+                        .paragraph_rows(last)
+                        .map(|(top, _)| top)
+                        .unwrap_or(0);
+                    self.scroll = top.min(self.scroll_limit());
+                    self.selected_paragraph = Some((self.chapter, last));
+                }
+            }
+            return;
+        }
+        let previous = current - 1;
+        let Some((top, bottom)) = self.view.paragraph_rows(previous) else {
+            return;
+        };
+        let page_bottom = self.scroll + usize::from(self.viewport_rows).max(1);
+        self.selected_paragraph = Some((self.chapter, previous));
+        if top < self.scroll || bottom > page_bottom {
+            self.scroll = top.min(self.scroll_limit());
+        }
+    }
+
+    /// Put the selected paragraph at the top of the screen.
+    fn align_paragraph_to_top(&mut self) {
+        if !self.config.paragraph_mode {
+            self.message = Some("paragraph mode is off".to_string());
+            return;
+        }
+        self.ensure_paragraph_selection();
+        let Some(paragraph) = self.current_paragraph() else {
+            return;
+        };
+        let Some((top, _)) = self.view.paragraph_rows(paragraph) else {
+            return;
+        };
+        self.scroll = top.min(self.scroll_limit());
+    }
+
     fn scroll_by(&mut self, delta: i64) {
+        self.selected_paragraph = None;
         if self.config.continuous {
             self.scroll_continuous(delta);
             return;
@@ -1348,9 +1557,12 @@ impl App {
 
         if hit.chapter != self.chapter {
             self.selected_link = None;
+            self.selected_paragraph = None;
             self.chapter = hit.chapter;
             self.scroll = 0;
             self.rebuild_view();
+        } else {
+            self.selected_paragraph = None;
         }
         if let Some(index) = self.view.find_hit(hit.block, &query, hit.offset) {
             let top = self.view.tops[index];
@@ -1557,6 +1769,7 @@ impl App {
                 self.chapter =
                     bookmark.chapter.min(self.book.chapters.len() - 1);
                 self.selected_link = None;
+                self.selected_paragraph = None;
                 self.rebuild_view();
                 let row = (bookmark.progress * self.view.total_rows as f32)
                     .round() as usize;
@@ -1581,7 +1794,8 @@ impl App {
     /// Words left in the current chapter and in the whole book.
     fn words_left(&self) -> (usize, usize) {
         let local = if self.view.total_rows > 0 {
-            (self.scroll as f64 / self.view.total_rows as f64).clamp(0.0, 1.0)
+            (self.progress_row() as f64 / self.view.total_rows as f64)
+                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -1702,6 +1916,24 @@ impl App {
             let limit = self.scroll_limit();
             self.scroll = self.snap(target.min(limit), true).min(limit);
         }
+        if self.config.paragraph_mode {
+            if let Some(paragraph) = self.pending_paragraph.take() {
+                if paragraph < self.view.paragraph_starts.len() {
+                    self.selected_paragraph = Some((self.chapter, paragraph));
+                    if let Some((top, bottom)) =
+                        self.view.paragraph_rows(paragraph)
+                    {
+                        let page_bottom = self.scroll
+                            + usize::from(self.viewport_rows).max(1);
+                        if top < self.scroll || bottom > page_bottom {
+                            self.scroll = top.min(self.scroll_limit());
+                        }
+                    }
+                }
+            }
+        } else {
+            self.pending_paragraph = None;
+        }
     }
 
     fn build_view(&mut self, index: usize) -> View {
@@ -1777,6 +2009,7 @@ impl App {
             return;
         }
         self.selected_link = None;
+        self.selected_paragraph = None;
         self.chapter = index;
         self.view = self.build_view(index);
         self.view_cache.clear();
@@ -1865,6 +2098,9 @@ impl App {
         if self.book.chapters.is_empty() {
             return;
         }
+        if self.config.paragraph_mode {
+            self.ensure_paragraph_selection();
+        }
 
         enum Paint {
             Line(Line<'static>),
@@ -1907,18 +2143,19 @@ impl App {
             }
 
             while index < item_count && y < area.bottom() {
-                let (paint, rows, top, marker) = {
+                let (paint, rows, top, marker, selected) = {
                     let view = self.view_ref(chapter);
                     let rows =
                         u16::try_from(view.rows(index)).unwrap_or(u16::MAX);
                     let top = view.tops[index];
+                    let paragraph = view.paragraph_of_item(index);
                     let marker = match &view.items[index] {
                         layout::Item::Line { plain, .. }
                             if plain.is_empty() =>
                         {
                             None
                         }
-                        _ => view.paragraph_of_item(index).map(|ordinal| {
+                        _ => paragraph.map(|ordinal| {
                             self.chapter_paragraph_offsets
                                 .get(chapter)
                                 .copied()
@@ -1926,9 +2163,31 @@ impl App {
                                 + ordinal
                         }),
                     };
+                    let selected = self.config.paragraph_mode
+                        && !matches!(
+                            &view.items[index],
+                            layout::Item::Line { plain, .. }
+                                if plain.is_empty()
+                        )
+                        && paragraph.map(|ordinal| {
+                            self.selected_paragraph
+                                == Some((chapter, ordinal))
+                        })
+                        .unwrap_or(false);
                     let paint = match &view.items[index] {
                         layout::Item::Line { line, .. } => {
-                            Paint::Line(line.clone())
+                            let mut line = line.clone();
+                            if self.config.paragraph_mode && !selected {
+                                for span in &mut line.spans {
+                                    if span.style.fg
+                                        == Some(self.palette.text)
+                                    {
+                                        span.style =
+                                            span.style.fg(self.palette.muted);
+                                    }
+                                }
+                            }
+                            Paint::Line(line)
                         }
                         layout::Item::Image { key, alt, cols, .. } => {
                             Paint::Image {
@@ -1938,7 +2197,7 @@ impl App {
                             }
                         }
                     };
-                    (paint, rows, top, marker)
+                    (paint, rows, top, marker, selected)
                 };
 
                 if top < row {
@@ -1948,22 +2207,29 @@ impl App {
 
                 let height = rows.min(area.bottom() - y);
 
-                if self.config.paragraph_colors {
-                    if let (Some(bar_x), Some(marker)) = (bar_x, marker) {
-                        let color = self.palette.markers
-                            [marker % self.palette.markers.len()];
-                        let style = Style::default()
-                            .fg(color)
-                            .bg(self.palette.background);
-                        for offset in 0..height {
-                            let rect = Rect::new(bar_x, y + offset, 1, 1);
-                            frame.render_widget(
-                                Paragraph::new(Line::from(Span::styled(
-                                    "\u{2502}", style,
-                                ))),
-                                rect,
-                            );
-                        }
+                let bar_color = if selected {
+                    // The primary accent, not the secondary `accent` role.
+                    Some(self.palette.heading)
+                } else if self.config.paragraph_colors {
+                    marker.map(|marker| {
+                        let index = marker % self.palette.markers.len();
+                        self.palette.markers[index]
+                    })
+                } else {
+                    None
+                };
+                if let (Some(bar_x), Some(color)) = (bar_x, bar_color) {
+                    let style = Style::default()
+                        .fg(color)
+                        .bg(self.palette.background);
+                    for offset in 0..height {
+                        let rect = Rect::new(bar_x, y + offset, 1, 1);
+                        frame.render_widget(
+                            Paragraph::new(Line::from(Span::styled(
+                                "\u{2502}", style,
+                            ))),
+                            rect,
+                        );
                     }
                 }
 
@@ -2399,7 +2665,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
         const HELP: &[&str] = &[
-            " j / k        line down / up",
+            " j / k        line / paragraph down / up",
             " d / u        half page down / up",
             " Space        next paragraph",
             " PgDn / PgUp  page down / up",
@@ -2413,18 +2679,18 @@ impl App {
             " %            jump to a percentage",
             " /            full-text search",
             " n / N        next / previous match",
-            " m            add bookmark",
-            " '            bookmarks",
+            " m / '        add bookmark / bookmarks",
             " i            toggle images",
             " c            toggle continuous mode",
             " p            toggle paragraph colors",
             " r            pull latest sync position",
+            " P            toggle paragraph reading mode",
+            " z            selected paragraph to top",
             " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
             " s / S        reading time / save settings",
             " mouse        wheel, click popups",
-            " ?            this help",
-            " q            quit",
+            " ? / q        help / quit",
         ];
         if area.width < 20 || area.height < 8 {
             return;
@@ -2588,6 +2854,17 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn first_text_fg(
+        buffer: &ratatui::buffer::Buffer,
+        row: u16,
+    ) -> ratatui::style::Color {
+        (2..buffer.area.width.saturating_sub(2))
+            .map(|x| &buffer[(x, row)])
+            .find(|cell| cell.symbol() != " ")
+            .map(|cell| cell.fg)
+            .expect("text on the row")
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -3286,6 +3563,302 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_mode_highlights_and_moves_with_j_and_k() {
+        let fixture = crate::testutil::sample_book();
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            &fixture.path,
+            Config {
+                paragraph_mode: true,
+                ..Config::default()
+            },
+            Picker::halfblocks(),
+            directory.path().join("positions.toml"),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let first = app.selected_paragraph.expect("a paragraph is selected").1;
+        let scroll = app.scroll();
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected_paragraph, Some((0, first + 1)));
+        assert_eq!(app.scroll(), scroll);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.selected_paragraph, Some((0, first)));
+        assert_eq!(app.scroll(), scroll);
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let (top, _) = app.view.paragraph_rows(first).unwrap();
+        let buffer = terminal.backend().buffer();
+        let bar = &buffer[(0, 1 + top as u16)];
+        assert_eq!(bar.symbol(), "\u{2502}", "selection bar is missing");
+        assert_eq!(bar.fg, app.palette.heading);
+        assert_eq!(
+            buffer[(5, 1 + top as u16)].bg,
+            app.palette.background,
+            "selection must not paint the paragraph background"
+        );
+
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.selected_paragraph, Some((0, first + 1)));
+    }
+
+    #[test]
+    fn paragraph_mode_turns_the_page_after_the_last_visible_paragraph() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Path::new("tests/sample.epub"),
+            Config {
+                paragraph_mode: true,
+                ..Config::default()
+            },
+            Picker::halfblocks(),
+            directory.path().join("positions.toml"),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let mut previous = app.selected_paragraph.expect("selected").1;
+        let mut turned = false;
+        for _ in 0..80 {
+            let scroll = app.scroll();
+            let page_bottom = scroll + usize::from(app.viewport_rows);
+            press(&mut app, KeyCode::Char(' '));
+            let Some((_, next)) = app.selected_paragraph else {
+                break;
+            };
+            if next == previous {
+                break;
+            }
+            assert_eq!(next, previous + 1);
+            let (top, bottom) = app.view.paragraph_rows(next).unwrap();
+            if app.scroll() != scroll {
+                assert_eq!(app.scroll(), top.min(app.scroll_limit()));
+                assert!(
+                    top >= page_bottom || bottom > page_bottom,
+                    "scrolled before the last visible paragraph"
+                );
+                turned = true;
+                break;
+            }
+            assert!(top < page_bottom);
+            previous = next;
+        }
+        assert!(turned, "space never turned the page");
+
+        let selected = app.selected_paragraph.expect("selected").1;
+        let scroll = app.scroll();
+        press(&mut app, KeyCode::Char('k'));
+        let back = app.selected_paragraph.expect("selected").1;
+        assert_eq!(back + 1, selected);
+        if app.scroll() != scroll {
+            let top = app.view.paragraph_rows(back).unwrap().0;
+            assert_eq!(app.scroll(), top.min(app.scroll_limit()));
+        }
+    }
+
+    #[test]
+    fn selecting_a_clipped_last_paragraph_moves_it_to_the_top() {
+        use crate::book::Chapter;
+        use crate::html::{Block, Inline, InlineFlags};
+
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        let inline = |text: &str| Inline {
+            text: text.into(),
+            flags: InlineFlags::default(),
+        };
+        let chapter = Chapter {
+            href: "ch.xhtml".into(),
+            title: "T".into(),
+            blocks: vec![
+                Block::Paragraph(vec![inline("one two three four five six")]),
+                Block::Paragraph(vec![inline(
+                    "alpha beta gamma delta epsilon zeta eta theta iota kappa \
+                     lambda mu nu xi omicron pi rho sigma tau upsilon phi chi",
+                )]),
+                Block::Paragraph(vec![inline("the last paragraph")]),
+            ],
+            plain: Vec::new(),
+            anchors: HashMap::new(),
+            links: Vec::new(),
+        };
+        app.view = layout::build(
+            &chapter,
+            &app.palette,
+            &Options {
+                width: 20,
+                paragraph_spacing: 0,
+                ..Options::default()
+            },
+            &Picker::halfblocks(),
+            |_| None,
+        );
+        app.config.paragraph_mode = true;
+        app.chapter = 0;
+        app.viewport_rows = 4;
+        app.scroll = 0;
+        app.selected_paragraph = Some((0, 0));
+
+        let (top, bottom) = app.view.paragraph_rows(1).unwrap();
+        assert!(top < 4 && bottom > 4, "fixture paragraph is not clipped");
+        app.select_next_paragraph();
+        assert_eq!(app.selected_paragraph, Some((0, 1)));
+        assert_eq!(app.scroll, top);
+    }
+
+    #[test]
+    fn restores_the_selected_paragraph_and_uses_it_for_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("positions.toml");
+        let config = || Config {
+            paragraph_mode: true,
+            ..Config::default()
+        };
+        let mut app = App::new(
+            Path::new("tests/sample.epub"),
+            config(),
+            Picker::halfblocks(),
+            state_path.clone(),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        let paragraph = app.current_paragraph().expect("selected paragraph");
+        let (top, _) = app.view.paragraph_rows(paragraph).unwrap();
+        assert!(
+            top > app.scroll(),
+            "the selected paragraph is at the scroll top"
+        );
+
+        app.save_position().unwrap();
+        let saved = Store::load(&state_path)
+            .get(&app.book_key)
+            .cloned()
+            .expect("saved position");
+        assert_eq!(saved.paragraph, Some(paragraph));
+        let expected = top as f32 / app.view.total_rows as f32;
+        assert!(
+            (saved.progress - expected).abs() < 1e-6,
+            "saved progress {} does not match paragraph row {}",
+            saved.progress,
+            expected
+        );
+        assert!(saved.book_progress > 0.0);
+        drop(app);
+
+        let mut reopened = App::new(
+            Path::new("tests/sample.epub"),
+            config(),
+            Picker::halfblocks(),
+            state_path,
+        )
+        .unwrap();
+        terminal.draw(|frame| reopened.draw(frame)).unwrap();
+        assert_eq!(reopened.current_paragraph(), Some(paragraph));
+        assert_eq!(reopened.scroll(), top.min(reopened.scroll_limit()));
+    }
+
+    #[test]
+    fn paragraph_mode_mutes_unselected_body_text() {
+        let fixture = crate::testutil::sample_book();
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            &fixture.path,
+            Config {
+                paragraph_mode: true,
+                ..Config::default()
+            },
+            Picker::halfblocks(),
+            directory.path().join("positions.toml"),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let heading = app.selected_paragraph.expect("selected").1;
+        let body = heading + 1;
+        let (heading_top, _) = app.view.paragraph_rows(heading).unwrap();
+        let (body_top, _) = app.view.paragraph_rows(body).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            first_text_fg(buffer, 1 + heading_top as u16),
+            app.palette.heading,
+            "headings must keep their color"
+        );
+        assert_eq!(
+            first_text_fg(buffer, 1 + body_top as u16),
+            app.palette.muted,
+            "unselected body text must use the muted color"
+        );
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected_paragraph, Some((0, body)));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            first_text_fg(buffer, 1 + body_top as u16),
+            app.palette.text,
+            "the selected paragraph must use the text color"
+        );
+    }
+
+    #[test]
+    fn z_aligns_the_selected_paragraph_to_the_top() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Path::new("tests/sample.epub"),
+            Config {
+                paragraph_mode: true,
+                ..Config::default()
+            },
+            Picker::halfblocks(),
+            directory.path().join("positions.toml"),
+        )
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        let paragraph = app.selected_paragraph.expect("selected").1;
+        let (top, _) = app.view.paragraph_rows(paragraph).unwrap();
+        assert!(top > app.scroll());
+
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.selected_paragraph, Some((0, paragraph)));
+        assert_eq!(app.scroll(), top.min(app.scroll_limit()));
+    }
+
+    #[test]
+    fn z_needs_paragraph_mode() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        let scroll = app.scroll();
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.scroll(), scroll);
+        assert!(screen(&mut app).contains("paragraph mode is off"));
+    }
+
+    #[test]
+    fn capital_p_toggles_paragraph_mode() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('P'));
+        assert!(app.config.paragraph_mode);
+        assert!(app.selected_paragraph.is_some());
+        assert!(screen(&mut app).contains("paragraph mode: on"));
+        press(&mut app, KeyCode::Char('P'));
+        assert!(!app.config.paragraph_mode);
+        assert!(app.selected_paragraph.is_none());
+        assert!(screen(&mut app).contains("paragraph mode: off"));
+    }
+
+    #[test]
     fn follows_and_returns_from_links() {
         let fixture = crate::testutil::sample_book();
         let (mut app, _, _directory) = app(&fixture);
@@ -3551,6 +4124,8 @@ mod tests {
             "save settings",
             "toggle paragraph colors",
             "pull latest sync position",
+            "paragraph reading mode",
+            "selected paragraph to top",
             "wheel, click popups",
         ] {
             assert!(text.contains(needle), "help is missing {needle}");

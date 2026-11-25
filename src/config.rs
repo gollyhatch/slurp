@@ -121,6 +121,9 @@ pub struct Config {
     /// Draw a color bar left of each paragraph, cycling through five theme
     /// colors, to help find the reading position while scrolling.
     pub paragraph_colors: bool,
+    /// Highlight one paragraph and advance it with Space, turning the page
+    /// only after the last paragraph on the screen.
+    pub paragraph_mode: bool,
     /// KOSync and CrossPoint Sync progress synchronization.
     pub sync: SyncConfig,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
@@ -145,6 +148,7 @@ impl Default for Config {
             reading_wpm: 250,
             continuous: false,
             paragraph_colors: false,
+            paragraph_mode: false,
             sync: SyncConfig::default(),
             colors: BTreeMap::new(),
             path: None,
@@ -214,6 +218,7 @@ impl Config {
         document["text_width"] = toml_edit::value(i64::from(self.text_width));
         document["continuous"] = toml_edit::value(self.continuous);
         document["paragraph_colors"] = toml_edit::value(self.paragraph_colors);
+        document["paragraph_mode"] = toml_edit::value(self.paragraph_mode);
         document["images"] = toml_edit::value(self.images);
         document["auto_scroll_wpm"] =
             toml_edit::value(i64::from(self.auto_scroll_wpm));
@@ -290,6 +295,7 @@ mod tests {
             reading_wpm = 320
             continuous = true
             paragraph_colors = true
+            paragraph_mode = true
 
             [sync]
             enabled = true
@@ -313,6 +319,7 @@ mod tests {
         assert_eq!(config.reading_wpm, 320);
         assert!(config.continuous);
         assert!(config.paragraph_colors);
+        assert!(config.paragraph_mode);
         assert!(config.sync.enabled);
         assert_eq!(config.sync.server, "https://sync.example.com");
         assert_eq!(config.sync.username, "reader");
@@ -334,6 +341,7 @@ mod tests {
         config.text_width = 100;
         config.continuous = true;
         config.paragraph_colors = true;
+        config.paragraph_mode = true;
         config.images = false;
         config.auto_scroll_wpm = 300;
 
@@ -347,6 +355,7 @@ mod tests {
         assert_eq!(loaded.text_width, 100);
         assert!(loaded.continuous);
         assert!(loaded.paragraph_colors);
+        assert!(loaded.paragraph_mode);
         assert!(!loaded.images);
         assert_eq!(loaded.auto_scroll_wpm, 300);
     }

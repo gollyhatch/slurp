@@ -58,11 +58,14 @@ text.*
   with no chapter switch needed. Two blank rows separate chapters.
 - Optional thin color lines left of each paragraph. Five theme colors cycle
   through the text, so a paragraph is easy to find again after scrolling.
+- Optional by-paragraph mode that marks the current paragraph with a
+  primary-accent bar and mutes the other body paragraphs. Space or `j` selects
+  the next one, and the page turns only after the last paragraph on the screen.
 - The `t` popup uses the EPUB table of contents with fuzzy filtering. If the
   book has none, the popup says so.
 - Inline images with Sixel, Kitty, iTerm2, or Unicode halfblocks.
-- Remembers the chapter and scroll position for each book and returns to the
-  same place on the next start.
+- Remembers the chapter, scroll position, and selected paragraph for each book
+  and returns to the same place on the next start.
 - Shows the time left for the chapter and the book, in the status line and in
   a popup on `s`.
 - Runs without a book and opens a recent-books list with chapter and
@@ -91,9 +94,9 @@ The binary is `target/release/slurp`.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, `Down` / `Up` | Scroll one line |
+| `j` / `k`, `Down` / `Up` | Scroll one line, or select the next/previous paragraph in paragraph mode |
 | `d` / `u` | Scroll half a page |
-| `Space` | Start of the next paragraph |
+| `Space` | Start of the next paragraph, or select the next paragraph in paragraph mode |
 | `PageDown` / `PageUp`, `b` | Scroll one page (`b` goes up) |
 | `g` / `G`, `Home` / `End` | Start or end of the chapter |
 | `h` / `l`, `Left` / `Right` | Previous or next chapter |
@@ -113,6 +116,8 @@ The binary is `target/release/slurp`.
 | `a` | Toggle auto-scroll |
 | `c` | Toggle continuous mode |
 | `p` | Toggle paragraph color bars |
+| `P` | Toggle paragraph reading mode |
+| `z` | Scroll so the selected paragraph is at the top |
 | `[` / `]` | Slower or faster auto-scroll (25 words per minute steps) |
 | `Ctrl+T` | Theme selector with search and live preview |
 | `+` / `-` | Wider or narrower text column |
@@ -162,6 +167,9 @@ continuous = false
 
 # Draw a color bar left of each paragraph, cycling through five theme colors.
 paragraph_colors = false
+
+# Mark the current paragraph and mute the others; advance with Space or j/k.
+paragraph_mode = false
 
 # Optional KOSync / CrossPoint Sync progress synchronization.
 [sync]
@@ -219,9 +227,23 @@ even when they contain many images.
 ## Reading position
 
 Positions are saved in `$XDG_DATA_HOME/slurp/positions.toml`, usually
-`~/.local/share/slurp/positions.toml`. The file keeps the chapter and the
-scroll fraction for each book. A position is saved when the chapter changes,
-when you quit, and when the program exits.
+`~/.local/share/slurp/positions.toml`. The file keeps the chapter, the scroll
+fraction, and the selected paragraph for each book. A position is saved when
+the chapter changes, when you quit, and when the program exits.
+
+## By paragraph
+
+Set `paragraph_mode = true` or press `P`. The paragraph at the top of the page
+is marked by a bar in the theme's primary accent color and keeps the normal
+text color. Other body paragraphs use the theme's muted color; headings,
+quotes, links, and code keep their own colors. Space and `j` select the next
+paragraph without scrolling; `k` selects the previous one. When the
+selection reaches the last paragraph on the page, the next advance puts the
+following paragraph at the top of the screen. If the last paragraph is clipped
+at the bottom, selecting it scrolls it to the top first. Press `z` to put the
+selected paragraph at the top without changing the selection. The selected
+paragraph is saved with the reading position, so reopening the book selects it
+again.
 
 ## Progress sync
 

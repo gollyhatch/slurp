@@ -36,8 +36,9 @@ Options:
   -V, --version         Show the version
 
 Keys:
-  j/k, d/u scroll; Space next paragraph; PgDn/PgUp pages; g/G top/bottom;
-  h/l chapter; t contents;
+  j/k scroll or select paragraphs with P; d/u half page; Space next;
+  P paragraph mode; z selected paragraph to top;
+  PgDn/PgUp pages; g/G top/bottom; h/l chapter; t contents;
   % jump to percentage; / search; n/N next/previous match;
   Tab next link; Enter follow link; Ctrl+O back after link;
   m add bookmark; ' bookmarks; s reading time; S save settings;
@@ -65,6 +66,7 @@ Configuration:
   reading_wpm = 250
   continuous = false
   paragraph_colors = false
+  paragraph_mode = false
 
   [sync]
   enabled = false

@@ -21,6 +21,9 @@ pub struct BookPosition {
     /// Scroll position as a fraction of the chapter height, from 0 to 1.
     #[serde(default)]
     pub progress: f32,
+    /// Selected paragraph in by-paragraph mode.
+    #[serde(default)]
+    pub paragraph: Option<usize>,
     /// Unix timestamp of the last update.
     #[serde(default)]
     pub updated: u64,
@@ -194,6 +197,7 @@ mod tests {
             title: "A".into(),
             chapter: 3,
             progress: 0.5,
+            paragraph: Some(4),
             updated: 1,
             chapters: 9,
             book_progress: 0.25,
@@ -205,6 +209,7 @@ mod tests {
         let position = loaded.get("/books/a.epub").unwrap();
         assert_eq!(position.chapter, 3);
         assert!((position.progress - 0.5).abs() < f32::EPSILON);
+        assert_eq!(position.paragraph, Some(4));
         assert_eq!(position.title, "A");
         assert_eq!(position.chapters, 9);
         assert!((position.book_progress - 0.25).abs() < f32::EPSILON);
