@@ -15,6 +15,11 @@ All screenshots use the built-in `ayu-dark` theme.
 
 *Reading view: reflowed text, emphasis, quotes, and the status line.*
 
+![Paragraph colors](screenshots/paragraph-colors.png)
+
+*Optional paragraph color bars (`p`): five theme colors cycle through the
+text.*
+
 ![Contents popup](screenshots/contents.png)
 
 *Contents popup with fuzzy filtering.*
