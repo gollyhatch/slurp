@@ -25,6 +25,7 @@ use crate::book::{Book, LinkTarget};
 use crate::config::Config;
 use crate::layout::{self, Options, View};
 use crate::state::{self, BookPosition, Bookmark, Store};
+use crate::sync::{self, RemoteProgress, SyncClient};
 use crate::theme::{self, Palette};
 
 /// Maximum number of search hits kept in memory.
@@ -103,6 +104,9 @@ pub struct App {
     state: Store,
     state_path: PathBuf,
     book_key: String,
+    sync: Option<SyncClient>,
+    sync_document: String,
+    sync_ready: bool,
     pending_progress: Option<f32>,
     chapter_chars: Vec<usize>,
     total_chars: usize,
@@ -157,6 +161,33 @@ impl App {
             chapter_paragraph_offsets.push(offset);
             offset += layout::paragraph_count(chapter);
         }
+        let mut sync_error = None;
+        let sync = if config.sync.enabled {
+            match SyncClient::new(&config.sync) {
+                Ok(client) => {
+                    match sync::document_id(
+                        Path::new(&book_key),
+                        config.sync.document_id,
+                    ) {
+                        Ok(document) => Some((client, document)),
+                        Err(error) => {
+                            sync_error = Some(format!("{error:#}"));
+                            None
+                        }
+                    }
+                }
+                Err(error) => {
+                    sync_error = Some(format!("{error:#}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let (sync, sync_document) = match sync {
+            Some((client, document)) => (Some(client), document),
+            None => (None, String::new()),
+        };
         let store = Store::load(&state_path);
         let saved = store.get(&book_key).cloned();
         let bookmarks = saved
@@ -215,6 +246,9 @@ impl App {
             state: store,
             state_path,
             book_key,
+            sync,
+            sync_document,
+            sync_ready: false,
             pending_progress: saved.map(|position| position.progress),
             chapter_chars,
             total_chars,
@@ -226,6 +260,10 @@ impl App {
             auto_scroll_idle: 0.0,
             last_tick: Instant::now(),
         };
+        if let Some(error) = sync_error {
+            app.message = Some(format!("sync: {error}"));
+        }
+        app.pull_progress();
         app.rebuild_view();
         Ok(app)
     }
@@ -295,6 +333,118 @@ impl App {
         };
         ((before as f32 + local * chars as f32) / self.total_chars as f32)
             .clamp(0.0, 1.0)
+    }
+
+    /// Fetch the remote position and adopt it when it is newer than the
+    /// local one.
+    fn pull_progress(&mut self) {
+        let remote = {
+            let Some(client) = &self.sync else {
+                return;
+            };
+            client.pull(&self.sync_document)
+        };
+        let remote = match remote {
+            Ok(Some(remote)) => remote,
+            Ok(None) => {
+                self.sync_ready = true;
+                return;
+            }
+            Err(error) => {
+                self.message = Some(format!("sync: {error:#}"));
+                return;
+            }
+        };
+        self.sync_ready = true;
+
+        let saved = self.state.get(&self.book_key).cloned();
+        let newer = saved
+            .as_ref()
+            .map(|saved| remote.timestamp > saved.updated)
+            .unwrap_or(true);
+        if !newer {
+            return;
+        }
+        let local = saved
+            .as_ref()
+            .map(|saved| {
+                if saved.chapters > 0 {
+                    saved.book_progress
+                } else {
+                    book_fraction_at(
+                        &self.chapter_chars,
+                        self.total_chars,
+                        saved.chapter,
+                        saved.progress,
+                    )
+                }
+            })
+            .unwrap_or(0.0);
+        if (remote.percentage - local).abs() >= 0.001 {
+            self.adopt_remote(&remote);
+        }
+    }
+
+    /// Jump to a whole-book fraction from the sync server.
+    fn adopt_remote(&mut self, remote: &RemoteProgress) {
+        let (chapter, progress) = self.locate_fraction(remote.percentage);
+        self.chapter = chapter;
+        self.selected_link = None;
+        self.view_cache.clear();
+        self.pending_progress = Some(progress);
+        let percent = (remote.percentage * 100.0).round() as u32;
+        let device = if remote.device.trim().is_empty() {
+            "another device"
+        } else {
+            remote.device.trim()
+        };
+        self.message = Some(format!("sync: {percent}% from {device}"));
+    }
+
+    /// Chapter and local progress for a whole-book fraction.
+    fn locate_fraction(&self, fraction: f32) -> (usize, f32) {
+        if self.total_chars == 0 || self.chapter_chars.is_empty() {
+            return (0, 0.0);
+        }
+        let target =
+            (fraction.clamp(0.0, 1.0) * self.total_chars as f32).round()
+                as usize;
+        let mut before = 0;
+        for (index, &chars) in self.chapter_chars.iter().enumerate() {
+            let end = before + chars;
+            if target < end || index + 1 == self.chapter_chars.len() {
+                let local = if chars == 0 {
+                    0.0
+                } else {
+                    (target.saturating_sub(before) as f32 / chars as f32)
+                        .clamp(0.0, 1.0)
+                };
+                return (index, local);
+            }
+            before = end;
+        }
+        (self.chapter_chars.len().saturating_sub(1), 0.0)
+    }
+
+    /// Push the current position after a successful pull in this session.
+    pub fn push_sync(&self) -> Result<()> {
+        if !self.sync_ready {
+            return Ok(());
+        }
+        let Some(client) = &self.sync else {
+            return Ok(());
+        };
+        let filename = Path::new(&self.book_key)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        client.push(
+            &self.sync_document,
+            self.book_fraction(),
+            &self.book.title,
+            self.book.author.as_deref(),
+            filename,
+        )
     }
 
     /// Handle one key press. Returns `true` when the reader must exit.
@@ -2344,11 +2494,31 @@ fn truncate(text: &str, width: usize) -> String {
     out
 }
 
+/// Whole-book fraction for a chapter and a fraction inside it.
+fn book_fraction_at(
+    chapter_chars: &[usize],
+    total_chars: usize,
+    chapter: usize,
+    progress: f32,
+) -> f32 {
+    if total_chars == 0 {
+        return 0.0;
+    }
+    let before: usize = chapter_chars.iter().take(chapter).sum();
+    let chars = chapter_chars.get(chapter).copied().unwrap_or(0);
+    ((before as f32 + progress.clamp(0.0, 1.0) * chars as f32)
+        / total_chars as f32)
+        .clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use std::io::{BufRead, Read, Write};
+    use std::sync::mpsc;
+    use std::thread;
 
     fn app(
         fixture: &crate::testutil::TestBook,
@@ -2401,6 +2571,205 @@ mod tests {
         let text = screen(&mut app);
         assert!(text.contains("Test Book"));
         assert!(text.contains("Alice was beginning"));
+    }
+
+    struct Captured {
+        method: String,
+        path: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    fn serve_requests(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, mpsc::Receiver<Captured>, thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader =
+                    std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_string();
+                let path = parts.next().unwrap_or_default().to_string();
+                let mut headers = Vec::new();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        let name = name.trim().to_ascii_lowercase();
+                        if name == "content-length" {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                        headers.push((name, value.trim().to_string()));
+                    }
+                }
+                let mut request_body = vec![0u8; length];
+                reader.read_exact(&mut request_body).unwrap();
+                sender
+                    .send(Captured {
+                        method,
+                        path,
+                        headers,
+                        body: String::from_utf8(request_body).unwrap(),
+                    })
+                    .unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        (format!("http://{address}"), receiver, handle)
+    }
+
+    fn sync_config(server: String) -> Config {
+        Config {
+            sync: crate::config::SyncConfig {
+                enabled: true,
+                server,
+                username: "reader".to_string(),
+                password: "secret".to_string(),
+                ..Default::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn adopts_newer_remote_progress() {
+        let (server, _requests, handle) = serve_requests(vec![(
+            "200 OK",
+            r#"{"percentage":0.5,"timestamp":100,"device":"CrossPoint"}"#,
+        )]);
+        let directory = tempfile::tempdir().unwrap();
+        let app = App::new(
+            Path::new("tests/sample.epub"),
+            sync_config(server),
+            Picker::halfblocks(),
+            directory.path().join("state.toml"),
+        )
+        .unwrap();
+        assert_eq!(
+            app.message.as_deref(),
+            Some("sync: 50% from CrossPoint")
+        );
+        assert!(app.pending_progress.is_some());
+        assert!(app.chapter() > 0);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn keeps_newer_local_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        let state_path = directory.path().join("state.toml");
+        let book = Path::new("tests/sample.epub");
+        let key = fs::canonicalize(book)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut store = Store::default();
+        store.books.push(BookPosition {
+            path: key,
+            chapter: 6,
+            progress: 0.9,
+            updated: 9_999_999_999,
+            chapters: 7,
+            book_progress: 0.9,
+            ..Default::default()
+        });
+        store.save(&state_path).unwrap();
+
+        let (server, _requests, handle) = serve_requests(vec![(
+            "200 OK",
+            r#"{"percentage":0.1,"timestamp":100,"device":"Other"}"#,
+        )]);
+        let app = App::new(
+            book,
+            sync_config(server),
+            Picker::halfblocks(),
+            state_path,
+        )
+        .unwrap();
+        assert_eq!(app.chapter(), 6);
+        assert!(
+            (app.pending_progress.unwrap() - 0.9).abs() < 0.0001,
+            "progress was {:?}",
+            app.pending_progress
+        );
+        assert_eq!(app.message, None);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn pushes_after_a_successful_pull() {
+        let (server, requests, handle) = serve_requests(vec![
+            ("200 OK", "{}"),
+            ("200 OK", r#"{"document":"x","timestamp":1}"#),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let app = App::new(
+            Path::new("tests/sample.epub"),
+            sync_config(server),
+            Picker::halfblocks(),
+            directory.path().join("state.toml"),
+        )
+        .unwrap();
+        app.push_sync().unwrap();
+
+        let pull = requests.recv().unwrap();
+        assert_eq!(pull.method, "GET");
+        let push = requests.recv().unwrap();
+        assert_eq!(push.method, "PUT");
+        assert_eq!(push.path, "/syncs/progress");
+        assert!(push.headers.contains(&(
+            "x-auth-key".to_string(),
+            "5ebe2294ecd0e0f08eab7690d2a6ee69".to_string()
+        )));
+        let body: serde_json::Value =
+            serde_json::from_str(&push.body).unwrap();
+        assert_eq!(body["document"], "2babf939094150df4dd24c53baf2b89a");
+        assert_eq!(body["device"], "slurp");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn maps_book_fractions_to_chapters() {
+        let fixture = crate::testutil::sample_book();
+        let (app, _, _directory) = app(&fixture);
+        for chapter in 0..app.chapter_chars.len() {
+            let chars = app.chapter_chars[chapter] as f32;
+            if chars == 0.0 {
+                continue;
+            }
+            for progress in [0.0, 0.25, 0.75] {
+                let fraction = book_fraction_at(
+                    &app.chapter_chars,
+                    app.total_chars,
+                    chapter,
+                    progress,
+                );
+                let (found, local) = app.locate_fraction(fraction);
+                assert_eq!(found, chapter);
+                assert!(
+                    (local - progress).abs() <= 1.0 / chars + 0.001,
+                    "chapter {chapter}: {local} != {progress}"
+                );
+            }
+        }
+        let (last, local) = app.locate_fraction(1.0);
+        assert_eq!(last, app.chapter_chars.len() - 1);
+        assert!((local - 1.0).abs() < 0.001);
     }
 
     #[test]

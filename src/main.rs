@@ -63,6 +63,13 @@ Configuration:
   continuous = false
   paragraph_colors = false
 
+  [sync]
+  enabled = false
+  server = \"https://sync.crosspointreader.com\"
+  username = \"you\"
+  password = \"secret\"
+  document_id = \"binary\"
+
   [colors]
   text = \"#cdd6f4\"
   background = \"#1e1e2e\"
@@ -201,7 +208,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<()> {
         app.tick();
     }
 
-    app.save_position()
+    app.save_position()?;
+    app.push_sync()
 }
 
 fn parse_args() -> Result<Args> {

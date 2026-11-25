@@ -10,7 +10,89 @@ use serde::Deserialize;
 /// Built-in theme used when the configuration does not name one.
 pub const DEFAULT_THEME: &str = "silkcircuit-neon";
 
-/// Runtime configuration.
+/// KOSync and CrossPoint Sync progress synchronization.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncConfig {
+    /// Turn synchronization on.
+    pub enabled: bool,
+    /// Base URL of the sync server, including any path prefix.
+    pub server: String,
+    /// Account name.
+    pub username: String,
+    /// Account password. The client sends its MD5 hash.
+    pub password: String,
+    /// Precomputed lowercase MD5 of the password, used instead of `password`.
+    pub key: String,
+    /// Human-readable device name sent to the server.
+    pub device: String,
+    /// Stable device identifier. CrossPoint Sync keeps one position per id.
+    pub device_id: String,
+    /// How the book is identified to the server.
+    pub document_id: DocumentId,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: String::new(),
+            username: String::new(),
+            password: String::new(),
+            key: String::new(),
+            device: "slurp".to_string(),
+            device_id: "slurp".to_string(),
+            document_id: DocumentId::Binary,
+        }
+    }
+}
+
+impl SyncConfig {
+    /// Check the fields used when synchronization is enabled.
+    pub fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let server = self.server.trim();
+        if server.is_empty() {
+            bail!("sync.server must not be empty");
+        }
+        if !(server.starts_with("https://") || server.starts_with("http://"))
+        {
+            bail!("sync.server must start with https:// or http://");
+        }
+        if self.username.trim().is_empty() {
+            bail!("sync.username must not be empty");
+        }
+        if self.username.contains(':') {
+            bail!("sync.username must not contain ':'");
+        }
+        if self.password.is_empty() && self.key.trim().is_empty() {
+            bail!("sync needs a password or a key");
+        }
+        if !self.key.trim().is_empty() {
+            let key = self.key.trim();
+            if key.len() != 32
+                || !key.chars().all(|ch| ch.is_ascii_hexdigit())
+            {
+                bail!("sync.key must be the 32-character MD5 of the password");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// How slurp derives the KOSync document identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DocumentId {
+    /// KOReader's partial MD5 of the EPUB file.
+    #[default]
+    Binary,
+    /// MD5 of the EPUB file name.
+    Filename,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -39,6 +121,8 @@ pub struct Config {
     /// Draw a color bar left of each paragraph, cycling through five theme
     /// colors, to help find the reading position while scrolling.
     pub paragraph_colors: bool,
+    /// KOSync and CrossPoint Sync progress synchronization.
+    pub sync: SyncConfig,
     /// Per-role color overrides, for example `text = "#cdd6f4"`.
     pub colors: BTreeMap<String, String>,
     /// File the configuration was loaded from, if any.
@@ -61,6 +145,7 @@ impl Default for Config {
             reading_wpm: 250,
             continuous: false,
             paragraph_colors: false,
+            sync: SyncConfig::default(),
             colors: BTreeMap::new(),
             path: None,
         }
@@ -171,6 +256,7 @@ impl Config {
             bail!("theme must not be empty");
         }
         crate::theme::validate_overrides(&self.colors)?;
+        self.sync.validate()?;
         Ok(())
     }
 
@@ -205,6 +291,13 @@ mod tests {
             continuous = true
             paragraph_colors = true
 
+            [sync]
+            enabled = true
+            server = "https://sync.example.com"
+            username = "reader"
+            password = "secret"
+            document_id = "filename"
+
             [colors]
             text = "#cdd6f4"
             accent = "#cba6f7"
@@ -220,6 +313,10 @@ mod tests {
         assert_eq!(config.reading_wpm, 320);
         assert!(config.continuous);
         assert!(config.paragraph_colors);
+        assert!(config.sync.enabled);
+        assert_eq!(config.sync.server, "https://sync.example.com");
+        assert_eq!(config.sync.username, "reader");
+        assert_eq!(config.sync.document_id, DocumentId::Filename);
         assert_eq!(config.colors.len(), 2);
     }
 
@@ -265,6 +362,46 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.top_margin, 1);
         assert_eq!(config.bottom_margin, 1);
+    }
+
+    #[test]
+    fn rejects_enabled_sync_without_credentials() {
+        let config = Config {
+            sync: SyncConfig {
+                enabled: true,
+                server: "https://sync.example.com".into(),
+                username: "reader".into(),
+                ..SyncConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validates_a_precomputed_sync_key() {
+        let invalid = Config {
+            sync: SyncConfig {
+                enabled: true,
+                server: "https://sync.example.com".into(),
+                username: "reader".into(),
+                key: "not-a-hash".into(),
+                ..SyncConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(invalid.validate().is_err());
+        let valid = Config {
+            sync: SyncConfig {
+                enabled: true,
+                server: "https://sync.example.com".into(),
+                username: "reader".into(),
+                key: "5ebe2294ecd0e0f08eab7690d2a6ee69".into(),
+                ..SyncConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

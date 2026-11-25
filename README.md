@@ -68,6 +68,8 @@ text.*
 - Runs without a book and opens a recent-books list with chapter and
   whole-book progress. `x` removes the selected book and its saved position,
   `c` removes every entry whose file is missing.
+- Optional KOSync and CrossPoint Sync progress synchronization across
+  devices.
 - Saves theme, width, and mode changes back to the config file with `S`,
   keeping comments and unrelated keys.
 - Uses the 39 built-in [opaline](https://crates.io/crates/opaline) themes.
@@ -159,6 +161,18 @@ continuous = false
 # Draw a color bar left of each paragraph, cycling through five theme colors.
 paragraph_colors = false
 
+# Optional KOSync / CrossPoint Sync progress synchronization.
+[sync]
+enabled = false
+server = "https://sync.crosspointreader.com"
+username = "you"
+password = "secret"
+# "binary" matches bytes (KOReader's partial MD5), "filename" hashes the name.
+document_id = "binary"
+# device = "slurp"
+# device_id = "slurp"
+# key = "lowercase md5 of the password, instead of password"
+
 # Optional per-role colors. Values are "#rrggbb".
 [colors]
 text = "#cdd6f4"
@@ -206,6 +220,27 @@ Positions are saved in `$XDG_DATA_HOME/slurp/positions.toml`, usually
 `~/.local/share/slurp/positions.toml`. The file keeps the chapter and the
 scroll fraction for each book. A position is saved when the chapter changes,
 when you quit, and when the program exits.
+
+## Progress sync
+
+The optional `[sync]` table connects slurp to a KOSync-compatible server,
+including CrossPoint Sync and `sync.koreader.rocks`. The password is sent as
+its lowercase MD5 hash, as KOReader does; use `key` to store that hash instead
+of the plain password.
+
+On open, slurp fetches the remote position and uses it when the server's
+timestamp is newer than the local one. On exit it pushes the current position.
+A failed sync at startup keeps the local position and skips the push, so an
+unreachable server cannot overwrite newer progress.
+
+Books are matched by KOReader's partial MD5 with `document_id = "binary"`, or
+by file name with `document_id = "filename"`. Use the same mode as the other
+device. CrossPoint Sync keeps one position per `device_id`; the default is
+`slurp`.
+
+Slurp exchanges whole-book percentages. It does not generate KOReader
+XPointers, so a KOReader device resumes at the percentage rather than an exact
+element.
 
 ## Command line
 
