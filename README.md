@@ -108,6 +108,7 @@ The binary is `target/release/slurp`.
 | `'` | Open the bookmark list (`Enter` jumps, `x` deletes) |
 | `s` | Reading stats for the chapter and the book |
 | `S` | Save the changed settings to the config file |
+| `r` | Fetch the newest synced position and jump to it |
 | `i` | Toggle images |
 | `a` | Toggle auto-scroll |
 | `c` | Toggle continuous mode |
@@ -242,6 +243,9 @@ device. CrossPoint Sync keeps one position per `device_id`; the default is
 Slurp exchanges whole-book percentages. It does not generate KOReader
 XPointers, so a KOReader device resumes at the percentage rather than an exact
 element.
+
+Press `r` in the reader to fetch the newest position again and jump to it,
+even when its timestamp is not newer than the local one.
 
 ## Command line
 

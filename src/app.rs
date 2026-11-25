@@ -385,6 +385,31 @@ impl App {
         }
     }
 
+    /// Fetch the remote position on demand and jump to it.
+    fn pull_latest(&mut self) {
+        if self.sync.is_none() {
+            self.message = Some("sync is not enabled".to_string());
+            return;
+        }
+        let remote = {
+            let Some(client) = &self.sync else {
+                return;
+            };
+            client.pull(&self.sync_document)
+        };
+        match remote {
+            Ok(Some(remote)) => {
+                self.sync_ready = true;
+                self.jump_to_remote(&remote);
+            }
+            Ok(None) => {
+                self.sync_ready = true;
+                self.message = Some("sync: no remote progress".to_string());
+            }
+            Err(error) => self.message = Some(format!("sync: {error:#}")),
+        }
+    }
+
     /// Jump to a whole-book fraction from the sync server.
     fn adopt_remote(&mut self, remote: &RemoteProgress) {
         let (chapter, progress) = self.locate_fraction(remote.percentage);
@@ -392,13 +417,20 @@ impl App {
         self.selected_link = None;
         self.view_cache.clear();
         self.pending_progress = Some(progress);
-        let percent = (remote.percentage * 100.0).round() as u32;
-        let device = if remote.device.trim().is_empty() {
-            "another device"
-        } else {
-            remote.device.trim()
-        };
-        self.message = Some(format!("sync: {percent}% from {device}"));
+        self.message = Some(remote_label(remote));
+    }
+
+    /// Jump to a remote position after the view has been laid out.
+    fn jump_to_remote(&mut self, remote: &RemoteProgress) {
+        let (chapter, progress) = self.locate_fraction(remote.percentage);
+        self.chapter = chapter.min(self.book.chapters.len().saturating_sub(1));
+        self.selected_link = None;
+        self.view_cache.clear();
+        self.rebuild_view();
+        let row = (progress * self.view.total_rows as f32).round() as usize;
+        self.scroll = row.min(self.scroll_limit());
+        self.message = Some(remote_label(remote));
+        let _ = self.save_position();
     }
 
     /// Chapter and local progress for a whole-book fraction.
@@ -732,6 +764,7 @@ impl App {
                     if self.config.paragraph_colors { "on" } else { "off" }
                 ));
             }
+            KeyCode::Char('r') => self.pull_latest(),
             KeyCode::Char('a') => self.toggle_auto_scroll(),
             KeyCode::Char('[') => self.adjust_auto_scroll_speed(-25),
             KeyCode::Char(']') => self.adjust_auto_scroll_speed(25),
@@ -2370,9 +2403,7 @@ impl App {
             " d / u        half page down / up",
             " Space        next paragraph",
             " PgDn / PgUp  page down / up",
-            " b            page up",
-            " a            toggle auto-scroll",
-            " [ / ]        slower / faster auto-scroll",
+            " a            auto-scroll; [ / ] speed",
             " g / G        start / end of chapter",
             " h / l        previous / next chapter",
             " Tab          next link",
@@ -2387,10 +2418,10 @@ impl App {
             " i            toggle images",
             " c            toggle continuous mode",
             " p            toggle paragraph colors",
+            " r            pull latest sync position",
             " Ctrl+T       theme selector",
             " + / -        wider / narrower text",
-            " s            reading time",
-            " S            save settings",
+            " s / S        reading time / save settings",
             " mouse        wheel, click popups",
             " ?            this help",
             " q            quit",
@@ -2509,6 +2540,17 @@ fn book_fraction_at(
     ((before as f32 + progress.clamp(0.0, 1.0) * chars as f32)
         / total_chars as f32)
         .clamp(0.0, 1.0)
+}
+
+/// Footer message for a remote position.
+fn remote_label(remote: &RemoteProgress) -> String {
+    let percent = (remote.percentage * 100.0).round() as u32;
+    let device = if remote.device.trim().is_empty() {
+        "another device"
+    } else {
+        remote.device.trim()
+    };
+    format!("sync: {percent}% from {device}")
 }
 
 #[cfg(test)]
@@ -2667,6 +2709,47 @@ mod tests {
         assert!(app.pending_progress.is_some());
         assert!(app.chapter() > 0);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn r_fetches_the_latest_remote_position() {
+        let (server, requests, handle) = serve_requests(vec![
+            (
+                "200 OK",
+                r#"{"percentage":0.1,"timestamp":100,"device":"A"}"#,
+            ),
+            (
+                "200 OK",
+                r#"{"percentage":0.8,"timestamp":200,"device":"B"}"#,
+            ),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Path::new("tests/sample.epub"),
+            sync_config(server),
+            Picker::halfblocks(),
+            directory.path().join("state.toml"),
+        )
+        .unwrap();
+        screen(&mut app);
+        assert_eq!(requests.recv().unwrap().method, "GET");
+        let before = app.book_percent();
+
+        press(&mut app, KeyCode::Char('r'));
+        assert!(screen(&mut app).contains("sync: 80% from B"));
+        assert!(app.book_percent() >= 70, "was {}", app.book_percent());
+        assert!(app.book_percent() > before);
+        assert_eq!(requests.recv().unwrap().method, "GET");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn r_reports_disabled_sync() {
+        let fixture = crate::testutil::sample_book();
+        let (mut app, _, _directory) = app(&fixture);
+        screen(&mut app);
+        press(&mut app, KeyCode::Char('r'));
+        assert!(screen(&mut app).contains("sync is not enabled"));
     }
 
     #[test]
@@ -3467,6 +3550,7 @@ mod tests {
             "reading time",
             "save settings",
             "toggle paragraph colors",
+            "pull latest sync position",
             "wheel, click popups",
         ] {
             assert!(text.contains(needle), "help is missing {needle}");

@@ -44,6 +44,7 @@ Keys:
   mouse wheel scrolls; click opens contents and theme entries;
   i toggle images; a auto-scroll; [ / ] speed; c continuous mode;
   p paragraph color bars;
+  r pull latest synced position;
   Ctrl+T theme selector;
   +/- text width; ? help; q quit
 
