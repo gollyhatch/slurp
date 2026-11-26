@@ -20,6 +20,11 @@ All screenshots use the built-in `ayu-dark` theme.
 *Optional paragraph color bars (`p`): five theme colors cycle through the
 text.*
 
+![Paragraph reading mode](screenshots/paragraph-mode.png)
+
+*Optional by-paragraph mode (`P`): the selected paragraph has a primary-accent
+bar and the other body text is muted.*
+
 ![Contents popup](screenshots/contents.png)
 
 *Contents popup with fuzzy filtering.*
