@@ -308,70 +308,14 @@ fn parse_args() -> Result<Args> {
     Ok(args)
 }
 
-/// Pick a graphics protocol from environment variables.
+/// Query the terminal for its native graphics protocol and cell size.
 ///
-/// Querying the terminal reads stdin in a background thread, which swallows
-/// the first key press. Environment detection avoids that.
+/// This runs once at startup and briefly reads stdin. Terminals that do not
+/// answer fall back to halfblocks.
 fn detect_picker() -> ratatui_image::picker::Picker {
-    use ratatui_image::picker::{Picker, ProtocolType};
+    use ratatui_image::picker::Picker;
 
-    let term = env::var("TERM").unwrap_or_default().to_ascii_lowercase();
-    let program = env::var("TERM_PROGRAM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let in_tmux = env::var("TMUX").is_ok_and(|value| !value.is_empty());
-
-    let protocol = if in_tmux {
-        // Kitty and iTerm2 escapes need tmux passthrough, which this
-        // program does not set up.
-        ProtocolType::Halfblocks
-    } else if env::var("KITTY_WINDOW_ID").is_ok_and(|value| !value.is_empty())
-        || term.contains("kitty")
-        || term.contains("ghostty")
-        || program == "ghostty"
-    {
-        ProtocolType::Kitty
-    } else if program == "iterm.app"
-        || program == "wezterm"
-        || term.contains("wezterm")
-    {
-        ProtocolType::Iterm2
-    } else if term.starts_with("foot")
-        || term.contains("sixel")
-        || term.contains("mlterm")
-        || term.contains("yaft")
-    {
-        ProtocolType::Sixel
-    } else {
-        ProtocolType::Halfblocks
-    };
-
-    if protocol == ProtocolType::Halfblocks {
-        return Picker::halfblocks();
-    }
-
-    #[allow(deprecated)]
-    let mut picker = Picker::from_fontsize(cell_size());
-    picker.set_protocol_type(protocol);
-    picker
-}
-
-fn cell_size() -> ratatui_image::FontSize {
-    use ratatui_image::FontSize;
-
-    if let Ok(size) = ratatui::crossterm::terminal::window_size() {
-        if size.columns > 0
-            && size.rows > 0
-            && size.width > 0
-            && size.height > 0
-        {
-            return FontSize::new(
-                (size.width / size.columns).max(1),
-                (size.height / size.rows).max(1),
-            );
-        }
-    }
-    FontSize::new(10, 20)
+    Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
 }
 
 #[cfg(test)]

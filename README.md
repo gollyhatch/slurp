@@ -217,14 +217,14 @@ theme = "/home/me/themes/my-theme.toml"
 
 ## Images
 
-slurp chooses a graphics protocol from the terminal environment:
+slurp queries the terminal for a graphics protocol and its cell size:
 
-- Kitty and Ghostty: Kitty graphics protocol.
-- iTerm2 and WezTerm: iTerm2 inline images.
-- foot, mlterm, yaft: Sixel.
-- Everything else: Unicode halfblocks, which works in any 256-color terminal.
-- Inside tmux or screen: halfblocks, because the passthrough setup for the
-  other protocols is not available.
+- Kitty, Ghostty, and supported Sixel terminals use their native graphics
+  protocol.
+- iTerm2, WezTerm, and compatible terminals use iTerm2 inline images.
+- Inside tmux, passthrough is used when tmux and the outer terminal support it.
+- Terminals that do not answer, or have no graphics protocol, use Unicode
+  halfblocks, which works in any 256-color terminal.
 
 Images are read when they first become visible. Large chapters open quickly
 even when they contain many images.
